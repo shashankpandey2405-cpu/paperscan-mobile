@@ -48,7 +48,11 @@ function flatCue(img,q){const W=img.width,H=img.height,d=img.data,NB=10,res=[];
   return {curve:Math.max(res[0],res[1]),ax:res}}
 T.maxCurve=0.06;
 function detectDoc(img,opt){opt=opt||{};const r0=detectDoc0(img,opt);if(!r0)return r0;const fc=flatCue(img,r0.pts);r0.curve=fc.curve;if(opt.debug)console.log('FLAT',JSON.stringify(fc));if(fc.curve>T.maxCurve&&!opt.noFlat)return null;return r0}
-function detectDoc0(img,opt){opt=opt||{};const r=detectCore(img,opt);if(r||opt.chroma||!T.faintChroma)return r;
+// cheap gate for the faint pass: blue-red chroma spread on a sparse grid. No chroma structure -> chroma edges cannot exist -> skip 2nd Hough.
+function chromaSpread(img){const d=img.data,n=img.width*img.height;let s=0,s2=0,c=0;for(let i=0;i<n;i+=7){const v=d[i*4+2]-d[i*4];s+=v;s2+=v*v;c++}const m=s/c;return Math.sqrt(Math.max(0,s2/c-m*m))}
+T.minChromaSpread=2.2;
+function detectDoc0(img,opt){opt=opt||{};const r=detectCore(img,opt);if(r||opt.chroma||!T.faintChroma||opt.noFaint)return r;
+  const cs=chromaSpread(img);if(opt.debug)console.log('CSPREAD',cs.toFixed(2));if(cs<T.minChromaSpread)return null;
   // faint pass: paper about as bright as (or darker than) a light table (e.g. receipt on a white desk). Edges from blue-red chroma; must look like paper.
   const f=detectCore(img,Object.assign({},opt,{chroma:T.faintChroma}));if(!f)return null;const pc=paperCue(img,f.pts);if(opt.debug)console.log('FAINT',JSON.stringify(pc));if(!pc.ok)return null;f.faint=1;return f}
 function detectCore(img,opt){
@@ -120,6 +124,13 @@ function detectCore(img,opt){
   sharp=c?sharp/c-(lm/c)**2:0;
   return {pts:q.map(p=>[Math.max(0,Math.min(W,p[0])),Math.max(0,Math.min(H,p[1]))]),score:best.score,edge:best.edge,minEdge:best.minS,contrast:best.con,areaFrac:best.areaFrac,sharp,n:cands.length};
 }
-root.PaperDetect={T,detectDoc,paperCue,flatCue,area,order};
+// focus measure: Laplacian energy normalised by gradient energy (contrast/content independent; blur by sigma cuts it ~1/sigma^2 vs 1/sigma).
+// ~0.5+ crisp, <0.25 visibly soft. Variance-of-Laplacian alone (Pech-Pacheco) depends on how much text is in view.
+function sharpness(img,q){const W=img.width,H=img.height,d=img.data;let x0=0,y0=0,x1=W,y1=H;if(q){x0=W;y0=H;x1=0;y1=0;q.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1])})}
+  const mx=(x1-x0)*0.12,my=(y1-y0)*0.12;x0=Math.max(1,x0+mx|0);x1=Math.min(W-1,x1-mx|0);y0=Math.max(1,y0+my|0);y1=Math.min(H-1,y1-my|0);if(x1-x0<12||y1-y0<12)return 0;
+  const L=i=>.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];let best=1e9; // per direction (x, y, both diagonals): 2nd-derivative energy / 1st-derivative energy; min catches motion blur
+  for(const st of [1,W,W+1,W-1]){let sl=0,sg=0;for(let y=y0;y<y1;y+=1)for(let x=x0;x<x1;x+=1){const i=y*W+x,c=L(i),a=L(i-st),b=L(i+st),l=2*c-a-b,g=(b-a)/2;sl+=l*l;sg+=g*g}best=Math.min(best,sg>1?sl/(sg*4):0)}
+  return best}
+root.PaperDetect={T,detectDoc,chromaSpread,sharpness,paperCue,flatCue,area,order};
 if(typeof module!=='undefined')module.exports=root.PaperDetect;
 })(typeof self!=='undefined'?self:globalThis);

@@ -31,11 +31,14 @@ $('#filePick').onchange=e=>{const f=e.target.files[0];if(!f)return;const im=new 
 let lastQuad=null; const DW=300;
 const dc=document.createElement('canvas'), dctx=dc.getContext('2d',{willReadFrequently:true});
 const mc=document.createElement('canvas'), mctx=mc.getContext('2d');
-function detect(src,w,h){
+let emptyRun=0,lastFaint=false,frameN=0,dtAvg=60;
+function detect(src,w,h,live){
   const dh=Math.round(DW*h/w);
   mc.width=DW*2;mc.height=dh*2;mctx.imageSmoothingEnabled=true;mctx.imageSmoothingQuality='high';mctx.drawImage(src,0,0,mc.width,mc.height);
   dc.width=DW;dc.height=dh;dctx.imageSmoothingEnabled=true;dctx.imageSmoothingQuality='high';dctx.drawImage(mc,0,0,DW,dh);
-  const r=PaperDetect.detectDoc(dctx.getImageData(0,0,DW,dh));if(!r)return null;
+  // speed: on a run of empty frames, pay the faint (chroma) 2nd pass only every 3rd frame unless the page was last found by it
+  const nf=live&&!lastFaint&&emptyRun>=2&&(frameN++%3!==0);
+  const r=PaperDetect.detectDoc(dctx.getImageData(0,0,DW,dh),{noFaint:nf});if(live){emptyRun=r?0:emptyRun+1;lastFaint=!!(r&&r.faint)}if(!r)return null;
   const k=w/DW;return {pts:r.pts.map(p=>[p[0]*k,p[1]*k]),score:r.score,sharp:r.sharp}}
 function polyArea(q){let a=0;for(let i=0;i<4;i++){const p=q[i],r=q[(i+1)%4];a+=p[0]*r[1]-r[0]*p[1]}return Math.abs(a)/2}
 
@@ -63,10 +66,10 @@ function startLoop(){if(loopOn)return;loopOn=true;hist=[];requestAnimationFrame(
 let lastT=0;
 function tick(t){
   if(!loopOn)return; requestAnimationFrame(tick);
-  if(t-lastT<110||!video.videoWidth||busy)return; lastT=t;
+  if(t-lastT<Math.max(66,dtAvg*1.6)||!video.videoWidth||busy)return; lastT=t;
   const vw=video.videoWidth,vh=video.videoHeight, W=ov.clientWidth,H=ov.clientHeight, dpr=devicePixelRatio||1;
   if(ov.width!==W*dpr){ov.width=W*dpr;ov.height=H*dpr}
-  const diag=Math.hypot(vw,vh), raw=detect(video,vw,vh), q=track(raw,t,diag); octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
+  const diag=Math.hypot(vw,vh), t0=performance.now(), raw=detect(video,vw,vh,true), q=track(raw,t,diag); dtAvg=dtAvg*0.8+(performance.now()-t0)*0.2; octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
   if(!q){lastQuad=null;hist=[];setStatus('Looking for a page…');return}
   const s=Math.max(W/vw,H/vh), ox=(W-vw*s)/2, oy=(H-vh*s)/2;
   hist.push({q,t}); while(hist.length&&t-hist[0].t>900)hist.shift();
@@ -79,19 +82,24 @@ function tick(t){
   if(!locked)setStatus('Page found… hold steady','#fc3');
   else if(!sharpOk)setStatus('Hold still — blurry','#fc3');
   else setStatus(auto?'Locked. Capturing…':'Locked. Tap the shutter','#5f5');
-  if(auto&&ready&&t-lastCap>2500){lastCap=t;capture(lastQuad)}
+  if(auto&&ready&&t-lastCap>2500){lastCap=t;if(capture(lastQuad,true)===false)lastCap=t-1700}
 }
 
 // ---------- capture + warp ----------
-function capture(quad){
+// focus gate: directional 2nd/1st-derivative energy ratio inside the page on a ~640px copy. Enhance cannot recover motion/defocus blur.
+const BLUR_MIN=0.55, BLUR_WARN=0.75; // PaperDetect.sharpness scale (test/focus_test.js): crisp 1.2-1.9, real KFC frame 0.81, 5px motion ~0.4, gaussian ~0.07
+function focusOf(c,quad){const k=Math.min(1,640/Math.max(c.width,c.height)),w=Math.round(c.width*k),h=Math.round(c.height*k),t=document.createElement('canvas');t.width=w;t.height=h;const x=t.getContext('2d',{willReadFrequently:true});x.drawImage(c,0,0,w,h);
+  return PaperDetect.sharpness(x.getImageData(0,0,w,h),quad?quad.map(p=>[p[0]*k,p[1]*k]):null)}
+function capture(quad,isAuto){
   if(!video.videoWidth)return; const c=document.createElement('canvas');c.width=video.videoWidth;c.height=video.videoHeight;
-  c.getContext('2d').drawImage(video,0,0); const f=$('#flash');f.style.opacity=1;setTimeout(()=>f.style.opacity=0,150);
+  c.getContext('2d').drawImage(video,0,0);
+  const fv=focusOf(c,quad);if(isAuto&&fv<BLUR_MIN){setStatus('Too blurry — hold still / tap to focus','#f66');return false} const f=$('#flash');f.style.opacity=1;setTimeout(()=>f.style.opacity=0,150);
   if(navigator.vibrate)navigator.vibrate(40);
-  addPage(c,quad); setStatus('Captured page '+pages.length+'. Next page or tap Done.','#5f5'); hist=[];
+  addPage(c,quad,fv); setStatus('Captured page '+pages.length+'. Next page or tap Done.','#5f5'); hist=[];
 }
-function addPage(full,quad){
+function addPage(full,quad,fv){
   const warped=quad?warp(full,quad):full;
-  const p={full,quad,autoQuad:quad,warped,mode:'magic',img:null,server:null};pages.push(p);counts();
+  const p={full,quad,autoQuad:quad,warped,mode:'magic',img:null,server:null,focus:fv};pages.push(p);counts();
   p.img=render(p); if(!$('#cam').classList.contains('on')||!batch){openCrop(pages.length-1)}
 }
 function solve(A,b){const n=b.length;for(let i=0;i<n;i++){let mx=i;for(let r=i+1;r<n;r++)if(Math.abs(A[r][i])>Math.abs(A[mx][i]))mx=r;[A[i],A[mx]]=[A[mx],A[i]];[b[i],b[mx]]=[b[mx],b[i]];
@@ -118,8 +126,8 @@ function render(p){
   x.putImageData(id,0,0);return c.toDataURL(p.mode==='bw'?'image/png':'image/jpeg',.92)}
 
 // ---------- edit / tray / pdf ----------
-function openEdit(i){cur=i;const p=pages[i];$('#editTitle').textContent='Page '+(i+1);$('#pageImg').src=p.server||p.img;
-  $$('.modes button[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===p.mode&&!p.server));$('#editMsg').textContent=p.quad?'':'No page edge found — full photo kept.';show('edit')}
+function openEdit(i){cur=i;const p=pages[i];const ob=$('#ocrOut');if(ob)ob.hidden=true;$('#editTitle').textContent='Page '+(i+1);$('#pageImg').src=p.server||p.img;
+  $$('.modes button[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===p.mode&&!p.server));$('#editMsg').textContent=(p.quad?'':'No page edge found — full photo kept. ')+(p.focus!=null&&p.focus<BLUR_WARN?'⚠ Photo looks blurry (focus '+p.focus.toFixed(2)+') — Enhance cannot fix blur; tap Retake for a sharp scan.':'');show('edit')}
 $$('.modes button[data-m]').forEach(b=>b.onclick=()=>{const p=pages[cur];p.mode=b.dataset.m;p.server=null;$('#editMsg').textContent='Working…';
   setTimeout(()=>{p.img=render(p);openEdit(cur);$('#editMsg').textContent=''},20)});
 ($('#rotBtn')||{}).onclick=()=>{const p=pages[cur],s=p.warped,c=document.createElement('canvas');c.width=s.height;c.height=s.width;const x=c.getContext('2d');x.translate(c.width,0);x.rotate(Math.PI/2);x.drawImage(s,0,0);p.warped=c;p.server=null;p.img=render(p);openEdit(cur)};
@@ -175,5 +183,14 @@ $('#cropCancel').onclick=()=>openEdit(cur);
 $('#cropBtn').onclick=()=>openCrop(cur);
 $('#editOk').onclick=()=>show('pages');
 ($('#retake2')||{}).onclick=()=>{pages.splice(cur,1);counts();stream?show('cam'):startCam()};
-$('#ocrBtn').onclick=()=>{$('#editMsg').textContent='Extract Text is coming soon (OCR not added yet).'};
+// Extract Text: Tesseract.js (Apache-2.0) lazy-loaded from CDN only when tapped (~2-4 MB incl. eng traineddata, cached by browser). Nothing loads at startup.
+let ocrW=null;function loadScript(u){return new Promise((r,j)=>{const s=document.createElement('script');s.src=u;s.onload=r;s.onerror=()=>j(new Error('load failed'));document.head.appendChild(s)})}
+$('#ocrBtn').onclick=async()=>{const p=pages[cur],m=$('#editMsg');if(!p)return;
+  try{m.textContent='Loading OCR (first time ~3 MB)…';if(!window.Tesseract)await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');
+    if(!ocrW)ocrW=await Tesseract.createWorker('eng',1,{logger:e=>{if(e.status==='recognizing text')m.textContent='Reading text… '+Math.round(e.progress*100)+'%'}});
+    const src=p.server||p.img;m.textContent='Reading text…';const {data}=await ocrW.recognize(src);const txt=(data.text||'').trim();
+    if(!txt){m.textContent='No text found.';return}
+    try{await navigator.clipboard.writeText(txt);m.textContent='Text copied ('+txt.length+' chars, confidence '+Math.round(data.confidence)+'%).'}catch(e){m.textContent='Text extracted:'}
+    let box=$('#ocrOut');if(!box){box=document.createElement('textarea');box.id='ocrOut';box.style.cssText='width:100%;height:30vh;font:13px monospace;margin-top:6px';m.after(box)}box.value=txt;box.hidden=false}
+  catch(e){m.textContent='OCR failed: '+e.message+' (needs internet the first time)'}};
 // manual camera shutter -> go straight to crop; file pick too
