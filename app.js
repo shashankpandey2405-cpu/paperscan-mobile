@@ -100,10 +100,8 @@ function solve(A,b){const n=b.length;for(let i=0;i<n;i++){let mx=i;for(let r=i+1
 function homog(from,to){const A=[],b=[];for(let i=0;i<4;i++){const[x,y]=from[i],[u,v]=to[i];
   A.push([x,y,1,0,0,0,-u*x,-u*y]);b.push(u);A.push([0,0,0,x,y,1,-v*x,-v*y]);b.push(v)}return solve(A,b).concat(1)}
 function warp(src,q){
-  const d=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
-  let w=Math.max(d(q[0],q[1]),d(q[3],q[2])),h=Math.max(d(q[0],q[3]),d(q[1],q[2]));
-  const r=h/w; if(Math.abs(r-1.414)/1.414<0.08)h=w*1.414;
-  const sc=Math.min(1.6,1600/Math.max(w,h)); const W=Math.round(w*sc),H=Math.round(h*sc);
+  // true page aspect from perspective geometry (Zhang-He), not bounding box / longest sides
+  const os=PaperEnhance.outSize(q,src.width,src.height,2000),W=os.w,H=os.h;
   const M=homog([[0,0],[W-1,0],[W-1,H-1],[0,H-1]],q);
   const sw=src.width,shh=src.height,sd=src.getContext('2d').getImageData(0,0,sw,shh).data;
   const out=document.createElement('canvas');out.width=W;out.height=H;const oc=out.getContext('2d'),od=oc.createImageData(W,H),o=od.data;
@@ -112,29 +110,12 @@ function warp(src,q){
     for(let c=0;c<3;c++)o[j+c]=(sd[i+c]*(1-fx)+sd[i+4+c]*fx)*(1-fy)+(sd[i+sw*4+c]*(1-fx)+sd[i+sw*4+4+c]*fx)*fy; o[j+3]=255}
   oc.putImageData(od,0,0);return out}
 
-// ---------- enhance ----------
+// ---------- enhance (enhance.js: shadow/paper normalisation with capped gain, ink-preserving curve) ----------
 function render(p){
   const s=p.warped,W=s.width,H=s.height,c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');x.drawImage(s,0,0);
-  if(p.mode==='original')return c.toDataURL('image/jpeg',.9);
-  const id=x.getImageData(0,0,W,H),d=id.data;
-  // background estimate: shrink to ~24px (averages away text), max-ish via brightest neighbours, scale back up
-  const bw=24,bh=Math.max(2,Math.round(24*H/W)),b=document.createElement('canvas');b.width=bw;b.height=bh;const bx=b.getContext('2d',{willReadFrequently:true});
-  bx.drawImage(s,0,0,bw,bh);const bd=bx.getImageData(0,0,bw,bh),bdd=bd.data,cp=new Uint8ClampedArray(bdd);
-  for(let y=0;y<bh;y++)for(let xx=0;xx<bw;xx++)for(let ch=0;ch<3;ch++){let m=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const yy=Math.min(bh-1,Math.max(0,y+dy)),xq=Math.min(bw-1,Math.max(0,xx+dx));m=Math.max(m,cp[(yy*bw+xq)*4+ch])}bdd[(y*bw+xx)*4+ch]=m}
-  bx.putImageData(bd,0,0);const B=document.createElement('canvas');B.width=W;B.height=H;const Bx=B.getContext('2d');Bx.imageSmoothingQuality='high';Bx.drawImage(b,0,0,W,H);const bg=Bx.getImageData(0,0,W,H).data;
-  for(let i=0;i<d.length;i+=4){
-    if(p.mode==='gray'||p.mode==='lighten'){const g=(.299*d[i]+.587*d[i+1]+.114*d[i+2])/(.299*bg[i]+.587*bg[i+1]+.114*bg[i+2]+1)*255;if(p.mode==='gray'){let v=(g-40)*255/208;v=v<0?0:v>255?255:v;d[i]=d[i+1]=d[i+2]=v}else{for(let c=0;c<3;c++){let v=d[i+c]*1.25+25;d[i+c]=v>255?255:v}}continue}
-    if(p.mode==='bw'){const g=(.299*d[i]+.587*d[i+1]+.114*d[i+2])/(.299*bg[i]+.587*bg[i+1]+.114*bg[i+2]+1);const v=g>0.78?255:0;d[i]=d[i+1]=d[i+2]=v;continue}
-    const wp=p.mode==='magic'?218:248, k=p.mode==='magic'?1.3:1.0, bp=p.mode==='magic'?70:40;
-    let r=d[i]/(bg[i]+1)*255,g=d[i+1]/(bg[i+1]+1)*255,bl=d[i+2]/(bg[i+2]+1)*255;
-    const L=(r+g+bl)/3; r=L+(r-L)*k; g=L+(g-L)*k; bl=L+(bl-L)*k;
-    const lv=v=>{v=(v-bp)*255/(wp-bp);return v<0?0:v>255?255:p.mode==='magic'?255*Math.pow(v/255,1.35):v};
-    d[i]=lv(r);d[i+1]=lv(g);d[i+2]=lv(bl)}
-  if(p.mode==='magic')sharpen(id,W,H,0.8);
+  if(p.mode==='original')return c.toDataURL('image/jpeg',.92);
+  const id=x.getImageData(0,0,W,H);PaperEnhance.enhance(id.data,W,H,p.mode);
   x.putImageData(id,0,0);return c.toDataURL(p.mode==='bw'?'image/png':'image/jpeg',.92)}
-// unsharp mask (3x3 box) -> crisp ink, keeps white paper white
-function sharpen(id,W,H,amt){const d=id.data,src=new Uint8ClampedArray(d);for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=(y*W+x)*4;
-  for(let c=0;c<3;c++){let s=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)s+=src[i+(dy*W+dx)*4+c];const v=src[i+c]+amt*(src[i+c]-s/9);d[i+c]=v<0?0:v>255?255:v}}}
 
 // ---------- edit / tray / pdf ----------
 function openEdit(i){cur=i;const p=pages[i];$('#editTitle').textContent='Page '+(i+1);$('#pageImg').src=p.server||p.img;
@@ -189,7 +170,7 @@ function rotFull(dir){const f=cp.full,c=document.createElement('canvas');c.width
   if(dir>0){x.translate(c.width,0);x.rotate(Math.PI/2)}else{x.translate(0,c.height);x.rotate(-Math.PI/2)}x.drawImage(f,0,0);
   const m=p=>dir>0?[f.height-p[1],p[0]]:[p[1],f.width-p[0]];cq=cq.map(m);let a=cq.slice();if(dir>0)a.unshift(a.pop());else a.push(a.shift());cq=a;if(autoQ){autoQ=autoQ.map(m);let b=autoQ.slice();if(dir>0)b.unshift(b.pop());else b.push(b.shift());autoQ=b}cp.full=c;drawCrop()}
 $('#rotL').onclick=()=>rotFull(-1);$('#rotR').onclick=()=>rotFull(1);
-$('#cropOk').onclick=()=>{$('#cropMsg').textContent='Cropping…';setTimeout(()=>{cp.quad=cq.map(p=>p.slice());cp.autoQuad=autoQ;cp.warped=warp(cp.full,cp.quad);cp.server=null;cp.img=render(cp);openEdit(cur)},20)};
+$('#cropOk').onclick=()=>{$('#cropMsg').textContent='Cropping…';setTimeout(()=>{cp.quad=PaperDetect.order(cq.map(p=>p.slice()));cp.autoQuad=autoQ;cp.warped=warp(cp.full,cp.quad);cp.server=null;cp.img=render(cp);openEdit(cur)},20)};
 $('#cropCancel').onclick=()=>openEdit(cur);
 $('#cropBtn').onclick=()=>openCrop(cur);
 $('#editOk').onclick=()=>show('pages');

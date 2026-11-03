@@ -38,7 +38,17 @@ function paperCue(img,q){const W=img.width,H=img.height,d=img.data;const c=[q.re
   for(let y=Math.max(0,y0|0);y<Math.min(H,y1);y+=2)for(let x=Math.max(0,x0|0);x<Math.min(W,x1);x+=2){if(!ins(x,y))continue;const i=(y*W+x)*4,r=d[i],g=d[i+1],b=d[i+2];L.push(.299*r+.587*g+.114*b);S.push(Math.max(r,g,b)-Math.min(r,g,b))}
   if(L.length<30)return {ok:false};const med=a=>a.slice().sort((u,v)=>u-v)[a.length>>1];const ml=med(L),ms=med(S),tx=L.filter(v=>v<ml-35).length/L.length;
   return {ok:ms<=T.paperMaxSat&&ml>=T.paperMinLum&&tx>=T.paperMinText&&tx<=T.paperMaxText,sat:ms,lum:ml,text:tx}}
-function detectDoc(img,opt){opt=opt||{};const r=detectCore(img,opt);if(r||opt.chroma||!T.faintChroma)return r;
+// flatness cue: a flat page has no symmetric "both edges darker than middle" shading across an axis; a cylinder (tube, bottle, can) does.
+function flatCue(img,q){const W=img.width,H=img.height,d=img.data,NB=10,res=[];
+  const at=(s,t)=>{const a=q[0],b=q[1],c=q[2],e=q[3];return [(a[0]*(1-s)+b[0]*s)*(1-t)+(e[0]*(1-s)+c[0]*s)*t,(a[1]*(1-s)+b[1]*s)*(1-t)+(e[1]*(1-s)+c[1]*s)*t]};
+  for(const ax of [0,1]){const prof=[];for(let k=0;k<NB;k++){const L=[];const u=0.06+0.88*(k+0.5)/NB;
+      for(let j=0;j<40;j++){const v=0.08+0.84*(j+0.5)/40;const p=ax?at(v,u):at(u,v);const x=p[0]|0,y=p[1]|0;if(x<0||y<0||x>=W||y>=H)continue;const i=(y*W+x)*4;L.push(.299*d[i]+.587*d[i+1]+.114*d[i+2])}
+      L.sort((a,b)=>a-b);prof.push(L.length?L[Math.floor(L.length*0.7)]:0)}
+    const c=Math.max(...prof.slice(3,7))||1,e0=(prof[0]+prof[1])/2,e1=(prof[NB-1]+prof[NB-2])/2;res.push(Math.min(c-e0,c-e1)/c)}
+  return {curve:Math.max(res[0],res[1]),ax:res}}
+T.maxCurve=0.06;
+function detectDoc(img,opt){opt=opt||{};const r0=detectDoc0(img,opt);if(!r0)return r0;const fc=flatCue(img,r0.pts);r0.curve=fc.curve;if(opt.debug)console.log('FLAT',JSON.stringify(fc));if(fc.curve>T.maxCurve&&!opt.noFlat)return null;return r0}
+function detectDoc0(img,opt){opt=opt||{};const r=detectCore(img,opt);if(r||opt.chroma||!T.faintChroma)return r;
   // faint pass: paper about as bright as (or darker than) a light table (e.g. receipt on a white desk). Edges from blue-red chroma; must look like paper.
   const f=detectCore(img,Object.assign({},opt,{chroma:T.faintChroma}));if(!f)return null;const pc=paperCue(img,f.pts);if(opt.debug)console.log('FAINT',JSON.stringify(pc));if(!pc.ok)return null;f.faint=1;return f}
 function detectCore(img,opt){
@@ -110,6 +120,6 @@ function detectCore(img,opt){
   sharp=c?sharp/c-(lm/c)**2:0;
   return {pts:q.map(p=>[Math.max(0,Math.min(W,p[0])),Math.max(0,Math.min(H,p[1]))]),score:best.score,edge:best.edge,minEdge:best.minS,contrast:best.con,areaFrac:best.areaFrac,sharp,n:cands.length};
 }
-root.PaperDetect={T,detectDoc,paperCue,area,order};
+root.PaperDetect={T,detectDoc,paperCue,flatCue,area,order};
 if(typeof module!=='undefined')module.exports=root.PaperDetect;
 })(typeof self!=='undefined'?self:globalThis);
