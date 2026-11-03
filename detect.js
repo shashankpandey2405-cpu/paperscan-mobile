@@ -30,10 +30,20 @@ function blur(a,W,H){const t=new Float32Array(a.length),o=new Float32Array(a.len
 function inter(l1,l2){const a1=Math.cos(l1.t),b1=Math.sin(l1.t),a2=Math.cos(l2.t),b2=Math.sin(l2.t),det=a1*b2-a2*b1;if(Math.abs(det)<1e-6)return null;
   return [(l1.r*b2-l2.r*b1)/det,(a1*l2.r-a2*l1.r)/det]}
 function convex(q){let s=0;for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];const z=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]);if(Math.abs(z)<1e-9)return false;if(!s)s=Math.sign(z);else if(Math.sign(z)!==s)return false}return true}
-const T={minArea:0.06,maxArea:0.62,maxAspect:3.2,minSide:0.5,maxSideSpread:0.45,minContrast:20,minScore:0.6,cornerMargin:0.01};
-function detectDoc(img,opt){
+const T={minArea:0.06,maxArea:0.62,maxAspect:3.2,maxAspectTall:5.5,faintChroma:5,faintKRef:1.7,paperMaxSat:18,paperMinLum:85,paperMinText:0.01,paperMaxText:0.4,minSide:0.5,maxSideSpread:0.45,minContrast:20,minScore:0.6,cornerMargin:0.01};
+// paper cue: interior near-neutral (low saturation), not dark, with some dark text strokes. Used for tall receipts and the faint (chroma) pass.
+function paperCue(img,q){const W=img.width,H=img.height,d=img.data;const c=[q.reduce((s,p)=>s+p[0],0)/4,q.reduce((s,p)=>s+p[1],0)/4];const qi=q.map(p=>[c[0]+(p[0]-c[0])*0.85,c[1]+(p[1]-c[1])*0.85]);
+  const ins=(x,y)=>{let r=false;for(let i=0,j=3;i<4;j=i++){const a=qi[i],b=qi[j];if((a[1]>y)!==(b[1]>y)&&x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0])r=!r}return r};
+  let x0=1e9,x1=0,y0=1e9,y1=0;qi.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1])});const L=[],S=[];
+  for(let y=Math.max(0,y0|0);y<Math.min(H,y1);y+=2)for(let x=Math.max(0,x0|0);x<Math.min(W,x1);x+=2){if(!ins(x,y))continue;const i=(y*W+x)*4,r=d[i],g=d[i+1],b=d[i+2];L.push(.299*r+.587*g+.114*b);S.push(Math.max(r,g,b)-Math.min(r,g,b))}
+  if(L.length<30)return {ok:false};const med=a=>a.slice().sort((u,v)=>u-v)[a.length>>1];const ml=med(L),ms=med(S),tx=L.filter(v=>v<ml-35).length/L.length;
+  return {ok:ms<=T.paperMaxSat&&ml>=T.paperMinLum&&tx>=T.paperMinText&&tx<=T.paperMaxText,sat:ms,lum:ml,text:tx}}
+function detectDoc(img,opt){opt=opt||{};const r=detectCore(img,opt);if(r||opt.chroma||!T.faintChroma)return r;
+  // faint pass: paper about as bright as (or darker than) a light table (e.g. receipt on a white desk). Edges from blue-red chroma; must look like paper.
+  const f=detectCore(img,Object.assign({},opt,{chroma:T.faintChroma}));if(!f)return null;const pc=paperCue(img,f.pts);if(opt.debug)console.log('FAINT',JSON.stringify(pc));if(!pc.ok)return null;f.faint=1;return f}
+function detectCore(img,opt){
   opt=opt||{};const W=img.width,H=img.height,d=img.data,n=W*H,diag=Math.hypot(W,H);
-  const g0=new Float32Array(n);for(let i=0;i<n;i++)g0[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
+  const g0=new Float32Array(n);for(let i=0;i<n;i++)g0[i]=opt.chroma?Math.max(0,Math.min(255,128+opt.chroma*(d[i*4+2]-d[i*4]))):.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
   const g=blur(g0,W,H);
   const gx=new Float32Array(n),gy=new Float32Array(n),gm=new Float32Array(n);
   for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;
@@ -69,7 +79,7 @@ function detectDoc(img,opt){
         const p=[inter(lines[a],lines[c]),inter(lines[c],lines[b]),inter(lines[b],lines[e]),inter(lines[e],lines[a])];
         if(p.some(v=>!v||v[0]<-m||v[1]<-m||v[0]>W+m||v[1]>H+m))continue;if(!convex(p))continue;
         const q=order(p),qa=area(q),af=qa/n;if(af<T.minArea||af>T.maxArea)continue;
-        const sd=i=>Math.hypot(q[i][0]-q[(i+1)%4][0],q[i][1]-q[(i+1)%4][1]),w1=(sd(0)+sd(2))/2,h1=(sd(1)+sd(3))/2,ar=Math.max(w1,h1)/Math.min(w1,h1);if(ar>T.maxAspect)continue;
+        const sd=i=>Math.hypot(q[i][0]-q[(i+1)%4][0],q[i][1]-q[(i+1)%4][1]),w1=(sd(0)+sd(2))/2,h1=(sd(1)+sd(3))/2,ar=Math.max(w1,h1)/Math.min(w1,h1);if(ar>T.maxAspectTall)continue;const tall=ar>T.maxAspect;
         if(Math.min(sd(0),sd(2))/Math.max(sd(0),sd(2))<0.5||Math.min(sd(1),sd(3))/Math.max(sd(1),sd(3))<0.5)continue;
         // interior angles 50..130 deg
         let badAng=false;for(let i=0;i<4;i++){const A=q[(i+3)%4],B=q[i],C=q[(i+1)%4],v1=[A[0]-B[0],A[1]-B[1]],v2=[C[0]-B[0],C[1]-B[1]];const cosA=(v1[0]*v2[0]+v1[1]*v2[1])/(Math.hypot(...v1)*Math.hypot(...v2));if(Math.abs(cosA)>0.65)badAng=true}if(badAng)continue;
@@ -78,8 +88,9 @@ function detectDoc(img,opt){
         const sup=S.map(v=>v.s),minS=Math.min(...sup),meanS=sup.reduce((x,y)=>x+y)/4;if(minS<T.minSide||Math.max(...sup)-minS>T.maxSideSpread)continue;
         const minC=Math.min(...S.map(v=>v.c)),meanC=S.reduce((x,v)=>x+v.c,0)/4;if(minC<T.minContrast)continue;
         const cm=T.cornerMargin*Math.max(W,H);let cb=0;for(const pp of q)if(pp[0]<cm||pp[1]<cm||pp[0]>W-1-cm||pp[1]>H-1-cm)cb++;let out=0;const om=0.005*Math.max(W,H);for(const pp of q)if(pp[0]<-om||pp[1]<-om||pp[0]>W-1+om||pp[1]>H-1+om)out++;if(out||cb>=2)continue;
+        if(tall&&!paperCue(img,q).ok)continue; // long receipts allowed only if the interior looks like paper
         const score=(0.5*meanS+0.5*minS)*Math.min(1,meanC/40)*Math.min(1,0.6+minC/50)*(cb>=2?0.5:1)*(af>0.55?0.75:1)*(0.85+0.15*Math.min(1,af/0.15));
-        const minK=Math.min(...S.map(v=>v.k));const score2=score*Math.pow(Math.min(1,minK/2.2),2); // soft shadow boundaries are not paper edges
+        const minK=Math.min(...S.map(v=>v.k));const score2=score*Math.pow(Math.min(1,minK/(opt.chroma?T.faintKRef:2.2)),2); // soft shadow boundaries are not paper edges
         cands.push({q,score:score2,edge:meanS,minS,minC,ks:S.map(v=>+v.k.toFixed(2)),fill:1,con:meanC,areaFrac:af})}}}
   cands.sort((a,b)=>b.score-a.score);if(opt.debug)console.log(lines.map(l=>[(l.t*180/Math.PI)|0,l.r,l.v|0]).join(' '));if(opt.debug)console.log('lines',lines.length,'eth',eth|0,'\n'+cands.slice(0,6).map(c=>JSON.stringify({q:c.q.map(p=>p.map(Math.round)),s:+c.score.toFixed(3),e:+c.edge.toFixed(2),mn:+c.minS.toFixed(2),con:c.con|0,mc:c.minC|0,k:c.ks,a:+c.areaFrac.toFixed(3)})).join('\n'));
   // prefer the OUTERMOST plausible page: a candidate that contains the top one with similar score wins (inner printed boxes / QR frames lose)
@@ -99,6 +110,6 @@ function detectDoc(img,opt){
   sharp=c?sharp/c-(lm/c)**2:0;
   return {pts:q.map(p=>[Math.max(0,Math.min(W,p[0])),Math.max(0,Math.min(H,p[1]))]),score:best.score,edge:best.edge,minEdge:best.minS,contrast:best.con,areaFrac:best.areaFrac,sharp,n:cands.length};
 }
-root.PaperDetect={T,detectDoc,area,order};
+root.PaperDetect={T,detectDoc,paperCue,area,order};
 if(typeof module!=='undefined')module.exports=root.PaperDetect;
 })(typeof self!=='undefined'?self:globalThis);
