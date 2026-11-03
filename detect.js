@@ -46,8 +46,25 @@ function flatCue(img,q){const W=img.width,H=img.height,d=img.data,NB=10,res=[];
       L.sort((a,b)=>a-b);prof.push(L.length?L[Math.floor(L.length*0.7)]:0)}
     const c=Math.max(...prof.slice(3,7))||1,e0=(prof[0]+prof[1])/2,e1=(prof[NB-1]+prof[NB-2])/2;res.push(Math.min(c-e0,c-e1)/c)}
   return {curve:Math.max(res[0],res[1]),ax:res}}
-T.maxCurve=0.06;
-function detectDoc(img,opt){opt=opt||{};const r0=detectDoc0(img,opt);if(!r0)return r0;const fc=flatCue(img,r0.pts);r0.curve=fc.curve;if(opt.debug)console.log('FLAT',JSON.stringify(fc));if(fc.curve>T.maxCurve&&!opt.noFlat)return null;return r0}
+T.maxCurve=0.08;T.colorK=0.6;T.colorGrad=0.8;T.maxLines=40;T.snapOut=1;T.snapG=30;T.snapSup=0.8;T.snapD=14;T.snapMax=0.35;T.snapMin=5;T.snapIt=3;T.foldMerge=1;T.foldScore=0.6;T.cohVote=0;T.cohLow=0.3;T.cohMin=0.85;T.bgModel=1;T.bgRing=0.06;T.bgRatio=0.5;T.bgW=0.4;T.areaW=0.5;T.inW=0.5;T.maxBgIn=0.6;T.outer=1;T.outerW=240;T.outerSolo=0.65;T.outerGrow=1.15;T.bgRef=0.5;
+const OLD={colorK:0,colorGrad:0,maxLines:28,snapOut:0,foldMerge:0,bgModel:0,maxCurve:0.06};
+function withT(o,f){const sv={};for(const k in o){sv[k]=T[k];T[k]=o[k]}try{return f()}finally{Object.assign(T,sv)}}
+function down(img,SW){if(img.width<=SW)return {im:img,k:1};const W=img.width,H=img.height,sh=Math.round(SW*H/W),o=new Uint8ClampedArray(SW*sh*4),kx=W/SW,ky=H/sh,d=img.data;
+  for(let y=0;y<sh;y++)for(let x=0;x<SW;x++){let r=0,g=0,b=0,c=0;for(let yy=Math.floor(y*ky);yy<Math.floor((y+1)*ky);yy++)for(let xx=Math.floor(x*kx);xx<Math.floor((x+1)*kx);xx++){const i=(yy*W+xx)*4;r+=d[i];g+=d[i+1];b+=d[i+2];c++}
+    const j=(y*SW+x)*4;o[j]=r/c;o[j+1]=g/c;o[j+2]=b/c;o[j+3]=255}return {im:{data:o,width:SW,height:sh},k:W/SW}}
+function inQ(p,q){let ins=false;for(let i=0,j=3;i<4;j=i++){const a=q[i],b=q[j];if((a[1]>p[1])!==(b[1]>p[1])&&p[0]<(b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0])ins=!ins}return ins}
+// PaperDetect v8: classic luma detector (v7, proven on receipts/negatives) + OUTER-PAGE detector (colour edges, background-colour model,
+// fold merge, outward snap). Outer result wins when the classic one found nothing (dark/colour page) or found a box INSIDE it (brochure panel).
+function detectDoc(img,opt){opt=opt||{};const r0=withT(OLD,()=>detectDocV(img,opt));if(opt.outer===false||!T.outer)return r0;
+  const sws=[].concat(opt.outerW||T.outerW);let rn=null;
+  for(const sw of sws){const {im,k}=down(img,sw);const r=detectDocV(im,Object.assign({},opt,{noFaint:1}));if(!r)continue;r.pts=r.pts.map(p=>[p[0]*k,p[1]*k]);r.k=k;
+    if(r.bgIn>T.maxBgIn)continue;if(!rn||r.score*Math.sqrt(r.areaFrac)*(1-r.bgIn)>rn.score*Math.sqrt(rn.areaFrac)*(1-rn.bgIn))rn=r}
+  if(opt.debug)console.log('V8 old',r0&&JSON.stringify(r0.pts.map(p=>p.map(Math.round))),'outer',rn&&JSON.stringify(rn.pts.map(p=>p.map(Math.round))));
+  if(!rn)return r0;if(!r0){if(rn.score<T.outerSolo)return null;rn.outer=1;return rn}
+  const tol=Math.max(img.width,img.height)*0.03,cx=r0.pts.reduce((s,p)=>s+p[0],0)/4,cy=r0.pts.reduce((s,p)=>s+p[1],0)/4;
+  const contains=r0.pts.every(p=>inQ(p,rn.pts)||rn.pts.some((q,i)=>{const b=rn.pts[(i+1)%4],dx=b[0]-q[0],dy=b[1]-q[1],t=Math.max(0,Math.min(1,((p[0]-q[0])*dx+(p[1]-q[1])*dy)/(dx*dx+dy*dy)));return Math.hypot(q[0]+dx*t-p[0],q[1]+dy*t-p[1])<tol}));
+  if(contains&&rn.areaFrac>=r0.areaFrac*T.outerGrow&&inQ([cx,cy],rn.pts)){rn.outer=1;rn.inner=r0.pts;return rn}return r0}
+function detectDocV(img,opt){opt=opt||{};const r0=detectDoc0(img,opt);if(!r0)return r0;const fc=flatCue(img,r0.pts);r0.curve=fc.curve;if(opt.debug)console.log('FLAT',JSON.stringify(fc));if(fc.curve>T.maxCurve&&!opt.noFlat)return null;return r0}
 // cheap gate for the faint pass: blue-red chroma spread on a sparse grid. No chroma structure -> chroma edges cannot exist -> skip 2nd Hough.
 function chromaSpread(img){const d=img.data,n=img.width*img.height;let s=0,s2=0,c=0;for(let i=0;i<n;i+=7){const v=d[i*4+2]-d[i*4];s+=v;s2+=v*v;c++}const m=s/c;return Math.sqrt(Math.max(0,s2/c-m*m))}
 T.minChromaSpread=2.2;
@@ -59,9 +76,20 @@ function detectCore(img,opt){
   opt=opt||{};const W=img.width,H=img.height,d=img.data,n=W*H,diag=Math.hypot(W,H);
   const g0=new Float32Array(n);for(let i=0;i<n;i++)g0[i]=opt.chroma?Math.max(0,Math.min(255,128+opt.chroma*(d[i*4+2]-d[i*4]))):.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
   const g=blur(g0,W,H);
+  // BACKGROUND COLOUR MODEL (GrabCut-style init): colours seen in the outer ring of the frame are "surface" (bedsheet, desk, clutter).
+  // bgL[i]=1 where pixel colour is much more frequent in the ring than in the whole frame. Paper border test = outside bg, inside not.
+  let bgL=null;if(T.bgModel&&!opt.chroma){const bin=i=>{const r=d[i*4],gg=d[i*4+1],bb=d[i*4+2],S=r+gg+bb+1;return (Math.min(15,(16*r/S*1.5)|0)<<8)|(Math.min(15,(16*gg/S*1.5)|0)<<4)|Math.min(15,(S/3)>>4)};const Hb=new Float32Array(4096),Ha=new Float32Array(4096);let rn=0;
+    const rw=Math.round(Math.min(W,H)*T.bgRing);for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=y*W+x,b=bin(i);Ha[b]++;if(x<rw||y<rw||x>=W-rw||y>=H-rw){Hb[b]++;rn++}}
+    // spread: chroma +-1, luma +-2 (shading tolerance)
+    const sp=h=>{const o=new Float32Array(4096);for(let b=0;b<4096;b++){if(!h[b])continue;const r=b>>8,gg=(b>>4)&15,l=b&15;for(let dr=-1;dr<=1;dr++)for(let dg=-1;dg<=1;dg++)for(let dl=-2;dl<=2;dl++){const R=r+dr,G=gg+dg,L=l+dl;if(R<0||G<0||L<0||R>15||G>15||L>15)continue;o[(R<<8)|(G<<4)|L]+=h[b]}}return o};
+    const Sb=sp(Hb),Sa=sp(Ha);bgL=new Uint8Array(n);for(let i=0;i<n;i++){const b=bin(i);bgL[i]=(Sb[b]/rn)/(Sa[b]/n+1e-9)>T.bgRatio?1:0}if(opt.dumpBg)opt.dumpBg(bgL,W,H)}
+  const bgStep=(a,b)=>{if(!bgL)return {bo:0,bi:0,ok:0};const L=Math.hypot(b[0]-a[0],b[1]-a[1]);if(L<4)return {bo:0,bi:0};let nx=-(b[1]-a[1])/L,ny=(b[0]-a[0])/L;const st=Math.max(8,Math.round(L/2));let o=0,ii=0,c=0; // +normal = inside (q clockwise)
+    for(let k=1;k<st;k++){const t=k/st,px=a[0]+(b[0]-a[0])*t,py=a[1]+(b[1]-a[1])*t;for(const dd of [3,6]){const xo=Math.round(px-nx*dd),yo=Math.round(py-ny*dd),xi=Math.round(px+nx*dd),yi=Math.round(py+ny*dd);
+      if(xo<0||yo<0||xo>=W||yo>=H||xi<0||yi<0||xi>=W||yi>=H)continue;o+=bgL[yo*W+xo];ii+=bgL[yi*W+xi];c++}}return c?{bo:o/c,bi:ii/c}:{bo:0,bi:0}};
   const gx=new Float32Array(n),gy=new Float32Array(n),gm=new Float32Array(n);
-  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;
-    const X=g[i-W+1]+2*g[i+1]+g[i+W+1]-g[i-W-1]-2*g[i-1]-g[i+W-1],Y=g[i+W-1]+2*g[i+W]+g[i+W+1]-g[i-W-1]-2*g[i-W]-g[i-W+1];gx[i]=X;gy[i]=Y;gm[i]=Math.hypot(X,Y)}
+  const chs=[g];if(!opt.chroma&&T.colorGrad){for(const o of [0,2]){const a=new Float32Array(n);for(let i=0;i<n;i++)a[i]=d[i*4+o];chs.push(blur(a,W,H))}}
+  for(const g of chs)for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;
+    const X=g[i-W+1]+2*g[i+1]+g[i+W+1]-g[i-W-1]-2*g[i-1]-g[i+W-1],Y=g[i+W-1]+2*g[i+W]+g[i+W+1]-g[i-W-1]-2*g[i-W]-g[i-W+1];const M=Math.hypot(X,Y)*(g===chs[0]?1:T.colorGrad);if(M>gm[i]){gx[i]=X;gy[i]=Y;gm[i]=M}}
   // non-max suppression -> thin edges; threshold at high percentile
   const nm=new Float32Array(n);for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x,m=gm[i];if(!m)continue;const ax=Math.abs(gx[i]),ay=Math.abs(gy[i]);let a,b;
     if(ax>2.4*ay){a=gm[i-1];b=gm[i+1]}else if(ay>2.4*ax){a=gm[i-W];b=gm[i+W]}else if(gx[i]*gy[i]>0){a=gm[i-W-1];b=gm[i+W+1]}else{a=gm[i-W+1];b=gm[i+W-1]}
@@ -70,21 +98,27 @@ function detectCore(img,opt){
   // oriented Hough
   const NT=180,NR=Math.ceil(diag)*2+1,acc=new Float32Array(NT*NR),cs=new Float32Array(NT),sn=new Float32Array(NT);
   for(let t=0;t<NT;t++){cs[t]=Math.cos(t*Math.PI/NT);sn[t]=Math.sin(t*Math.PI/NT)}
-  for(let y=2;y<H-2;y++)for(let x=2;x<W-2;x++){const i=y*W+x;if(nm[i]<eth)continue;let th=Math.atan2(gy[i],gx[i]);if(th<0)th+=Math.PI;const tc=Math.round(th/Math.PI*NT);
+  let coh=null,lthr=eth;if(T.cohVote&&!opt.chroma){lthr=Math.max(12,T.cohLow*eth);// structure-tensor coherence (box 7x7): straight paper borders ~1, polka dots / curved cables / texture lower
+    const jxx=new Float32Array(n),jyy=new Float32Array(n),jxy=new Float32Array(n);for(let i=0;i<n;i++){jxx[i]=gx[i]*gx[i];jyy[i]=gy[i]*gy[i];jxy[i]=gx[i]*gy[i]}
+    const box=a=>{const t=new Float32Array(n),o=new Float32Array(n),R=3;for(let y=0;y<H;y++){let s=0;for(let x=-R;x<W;x++){if(x+R<W)s+=a[y*W+x+R];if(x-R-1>=0)s-=a[y*W+x-R-1];if(x>=0)t[y*W+x]=s}}
+      for(let x=0;x<W;x++){let s=0;for(let y=-R;y<H;y++){if(y+R<H)s+=t[(y+R)*W+x];if(y-R-1>=0)s-=t[(y-R-1)*W+x];if(y>=0)o[y*W+x]=s}}return o};
+    const A=box(jxx),B=box(jyy),C=box(jxy);coh=new Float32Array(n);for(let i=0;i<n;i++){const tr=A[i]+B[i];coh[i]=tr>1?((A[i]-B[i])**2+4*C[i]*C[i])/(tr*tr):0}}
+  for(let y=2;y<H-2;y++)for(let x=2;x<W-2;x++){const i=y*W+x;if(nm[i]<lthr)continue;if(coh&&coh[i]<T.cohMin)continue;let th=Math.atan2(gy[i],gx[i]);if(th<0)th+=Math.PI;const tc=Math.round(th/Math.PI*NT);
     for(let dt=-6;dt<=6;dt++){let t=tc+dt,flip=1;if(t<0){t+=NT;flip=-1}else if(t>=NT){t-=NT;flip=-1}const r=Math.round((x*cs[t]+y*sn[t]))+Math.ceil(diag);acc[t*NR+r]+=1}}
   const lines=[];const used=new Uint8Array(NT*NR);
-  for(let k=0;k<28;k++){let bi=-1,bv=Math.max(10,0.08*Math.min(W,H));for(let i=0;i<acc.length;i++)if(!used[i]&&acc[i]>bv){bv=acc[i];bi=i}
+  for(let k=0;k<T.maxLines;k++){let bi=-1,bv=Math.max(10,0.08*Math.min(W,H));for(let i=0;i<acc.length;i++)if(!used[i]&&acc[i]>bv){bv=acc[i];bi=i}
     if(bi<0)break;const t=(bi/NR)|0,r=bi%NR;lines.push({t:t*Math.PI/NT,r:r-Math.ceil(diag),v:bv});
     for(let dt=-5;dt<=5;dt++)for(let dr=-6;dr<=6;dr++){let tt=t+dt,rr=r+dr;if(tt<0){tt+=NT;rr=2*Math.ceil(diag)-rr}else if(tt>=NT){tt-=NT;rr=2*Math.ceil(diag)-rr}if(rr>=0&&rr<NR)used[tt*NR+rr]=1}}
   // side support: fraction of samples with an aligned edge pixel within +-2px
-  const side=(a,b)=>{const L=Math.hypot(b[0]-a[0],b[1]-a[1]);if(L<4)return {s:0,c:0};const nx=-(b[1]-a[1])/L,ny=(b[0]-a[0])/L,steps=Math.max(6,Math.round(L/1.5));let hit=0,tot=0,ci=0,co=0,cn=0,mg=0;
+  const side=(a,b)=>{const L=Math.hypot(b[0]-a[0],b[1]-a[1]);if(L<4)return {s:0,c:0};const nx=-(b[1]-a[1])/L,ny=(b[0]-a[0])/L,steps=Math.max(6,Math.round(L/1.5));let hit=0,tot=0,ci=0,co=0,cn=0,mg=0;const CC=[];
     for(let s=1;s<steps;s++){const t=s/steps,px=a[0]+(b[0]-a[0])*t,py=a[1]+(b[1]-a[1])*t;let ok=0,mm=0;
       for(let o=-2;o<=2;o++){const x=Math.round(px+nx*o),y=Math.round(py+ny*o);if(x<1||y<1||x>=W-1||y>=H-1)continue;const i=y*W+x;if(gm[i]>mm)mm=gm[i];if(ok)continue;if(nm[i]<eth*0.6&&gm[i]<eth)continue;const al=Math.abs(gx[i]*nx+gy[i]*ny)/(gm[i]+1e-6);if(al>0.85)ok=1}
       tot++;hit+=ok;mg+=mm;
       const xi=Math.round(px+nx*4),yi=Math.round(py+ny*4),xo=Math.round(px-nx*4),yo=Math.round(py-ny*4);
-      if(xi>=0&&yi>=0&&xi<W&&yi<H&&xo>=0&&yo>=0&&xo<W&&yo<H){ci+=g[yi*W+xi];co+=g[yo*W+xo];cn++}}
-    const c=cn?(ci-co)/cn:0;return {s:tot?hit/tot:0,c,k:tot?(mg/tot)/(Math.abs(c)+5):0}};
-  const cands=[];const m=Math.max(W,H)*0.03;
+      if(xi>=0&&yi>=0&&xi<W&&yi<H&&xo>=0&&yo>=0&&xo<W&&yo<H){ci+=g[yi*W+xi];co+=g[yo*W+xo];cn++;const I=(yi*W+xi)*4,O=(yo*W+xo)*4;CC.push(Math.hypot(d[I]-d[O],d[I+1]-d[O+1],d[I+2]-d[O+2]))}}
+    CC.sort((u,v)=>u-v);const cc=CC.length?CC[Math.floor(CC.length*0.4)]:0;
+    const c=cn?(ci-co)/cn:0;return {s:tot?hit/tot:0,c:Math.max(c,T.colorK*cc*(opt.chroma?0:1)),c0:c,cc,k:tot?(mg/tot)/(Math.max(Math.abs(c),T.colorK*cc)+5):0}};
+  const cands=[];const m=Math.max(W,H)*0.03;const sideMemo=new Map();
   for(let a=0;a<lines.length;a++)for(let b=a+1;b<lines.length;b++){
     const dab=Math.abs(Math.sin(lines[a].t-lines[b].t));if(dab>0.35)continue; // a,b roughly parallel
     for(let c=0;c<lines.length;c++){if(c===a||c===b)continue;if(Math.abs(Math.sin(lines[a].t-lines[c].t))<0.6)continue;
@@ -97,7 +131,7 @@ function detectCore(img,opt){
         if(Math.min(sd(0),sd(2))/Math.max(sd(0),sd(2))<0.5||Math.min(sd(1),sd(3))/Math.max(sd(1),sd(3))<0.5)continue;
         // interior angles 50..130 deg
         let badAng=false;for(let i=0;i<4;i++){const A=q[(i+3)%4],B=q[i],C=q[(i+1)%4],v1=[A[0]-B[0],A[1]-B[1]],v2=[C[0]-B[0],C[1]-B[1]];const cosA=(v1[0]*v2[0]+v1[1]*v2[1])/(Math.hypot(...v1)*Math.hypot(...v2));if(Math.abs(cosA)>0.65)badAng=true}if(badAng)continue;
-        const S=[0,1,2,3].map(i=>side(q[i],q[(i+1)%4]));
+        const S=[0,1,2,3].map(i=>{const a=q[i],b=q[(i+1)%4],key=a[0]+','+a[1]+','+b[0]+','+b[1];let v=sideMemo.get(key);if(!v){v=side(a,b);sideMemo.set(key,v)}return v});
         // q is clockwise on screen -> inward normal (-dy,dx)/L points inside; c>0 means inside brighter
         const sup=S.map(v=>v.s),minS=Math.min(...sup),meanS=sup.reduce((x,y)=>x+y)/4;if(minS<T.minSide||Math.max(...sup)-minS>T.maxSideSpread)continue;
         const minC=Math.min(...S.map(v=>v.c)),meanC=S.reduce((x,v)=>x+v.c,0)/4;if(minC<T.minContrast)continue;
@@ -105,8 +139,10 @@ function detectCore(img,opt){
         if(tall&&!paperCue(img,q).ok)continue; // long receipts allowed only if the interior looks like paper
         const score=(0.5*meanS+0.5*minS)*Math.min(1,meanC/40)*Math.min(1,0.6+minC/50)*(cb>=2?0.5:1)*(af>0.55?0.75:1)*(0.85+0.15*Math.min(1,af/0.15));
         const minK=Math.min(...S.map(v=>v.k));const score2=score*Math.pow(Math.min(1,minK/(opt.chroma?T.faintKRef:2.2)),2); // soft shadow boundaries are not paper edges
-        cands.push({q,score:score2,edge:meanS,minS,minC,ks:S.map(v=>+v.k.toFixed(2)),fill:1,con:meanC,areaFrac:af})}}}
-  cands.sort((a,b)=>b.score-a.score);if(opt.debug)console.log(lines.map(l=>[(l.t*180/Math.PI)|0,l.r,l.v|0]).join(' '));if(opt.debug)console.log('lines',lines.length,'eth',eth|0,'\n'+cands.slice(0,6).map(c=>JSON.stringify({q:c.q.map(p=>p.map(Math.round)),s:+c.score.toFixed(3),e:+c.edge.toFixed(2),mn:+c.minS.toFixed(2),con:c.con|0,mc:c.minC|0,k:c.ks,a:+c.areaFrac.toFixed(3)})).join('\n'));
+        let bgE=1,bgIn=0;if(bgL){{let c=0,t=0;for(let u=0.05;u<1;u+=0.1)for(let v=0.05;v<1;v+=0.1){const x=Math.round((q[0][0]*(1-u)+q[1][0]*u)*(1-v)+(q[3][0]*(1-u)+q[2][0]*u)*v),y=Math.round((q[0][1]*(1-u)+q[1][1]*u)*(1-v)+(q[3][1]*(1-u)+q[2][1]*u)*v);if(x<0||y<0||x>=W||y>=H)continue;t++;c+=bgL[y*W+x]}bgIn=t?c/t:0}const B=[0,1,2,3].map(i=>bgStep(q[i],q[(i+1)%4]));bgE=Math.min(...B.map(v=>Math.max(0,v.bo-v.bi)));bgE=B.reduce((x,v)=>x+Math.max(0,v.bo-v.bi),0)/4*0.5+bgE*0.5}
+        if(bgL&&bgIn>T.maxBgIn)continue; // interior mostly looks like the surrounding surface -> not a sheet (cable/charger/bedsheet frankenquad)
+        cands.push({q,bgE,score:score2,rank:score2*(bgL?(1-T.bgW)+T.bgW*Math.min(1,bgE/T.bgRef):1)*(1+T.areaW*Math.sqrt(af))*(bgL?1-T.inW*bgIn:1),bgIn,edge:meanS,minS,minC,ks:S.map(v=>+v.k.toFixed(2)),fill:1,con:meanC,areaFrac:af})}}}
+  cands.sort((a,b)=>b.rank-a.rank);cands.forEach(c=>{if(c.score<T.minScore)c.rank=-1});cands.sort((a,b)=>b.rank-a.rank);if(opt.debug)console.log(lines.map(l=>[(l.t*180/Math.PI)|0,l.r,l.v|0]).join(' '));if(opt.debug)console.log('lines',lines.length,'eth',eth|0,'\n'+cands.slice(0,6).map(c=>JSON.stringify({q:c.q.map(p=>p.map(Math.round)),s:+c.score.toFixed(3),e:+c.edge.toFixed(2),mn:+c.minS.toFixed(2),con:c.con|0,mc:c.minC|0,k:c.ks,a:+c.areaFrac.toFixed(3)})).join('\n'));
   // prefer the OUTERMOST plausible page: a candidate that contains the top one with similar score wins (inner printed boxes / QR frames lose)
   let best=cands[0];if(!best||best.score<T.minScore)return null;
   const inside=(p,q)=>{let ins=false;for(let i=0,j=3;i<4;j=i++){const a=q[i],b=q[j];if((a[1]>p[1])!==(b[1]>p[1])&&p[0]<(b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0])ins=!ins}return ins};
@@ -118,11 +154,43 @@ function detectCore(img,opt){
     if(opt.debug)for(const c of cands)if(c.areaFrac>best.areaFrac*1.15&&c.areaFrac<best.areaFrac*2.2&&c.score>best.score*0.7)console.log("C",JSON.stringify(c.q.map(p=>p.map(Math.round))),c.score.toFixed(3),c.minS.toFixed(2),c.minC|0,c.areaFrac.toFixed(3),best.q.map(p=>(inside(p,c.q)?"in":segD(p,c.q).toFixed(1))).join());
     for(const c of cands){if(c===best||c.areaFrac<best.areaFrac*1.15||c.areaFrac>best.areaFrac*6||c.minC<T.minContrast||c.score<best.score*0.8||c.minS<0.5)continue;
       if(best.q.every(p=>inside(p,c.q)||segD(p,c.q)<tol)&&p90(c.q,best.q,0.8*(bp90<0?(bp90=p90(best.q)):bp90))>=0.5&&(!up||c.score*Math.sqrt(c.areaFrac)>up.score*Math.sqrt(up.areaFrac)))up=c}
-    if(opt.debug)console.log("UP",up&&JSON.stringify(up.q));if(!up)break;best=up}const q=best.q;
+    if(opt.debug)console.log("UP",up&&JSON.stringify(up.q));if(!up)break;best=up}
+  // FOLD MERGE: a folded brochure splits into two panels at the crease. If another plausible candidate shares one full side with best
+  // (two adjacent corners coincide) and lies on the other side of it, the page is their union (outer corners of both).
+  if(T.foldMerge)for(let it=0;it<2;it++){const tol=Math.max(W,H)*0.035;let mg=null;
+    for(const c of cands){if(c===best||c.score<best.score*T.foldScore||c.minS<0.5)continue;
+      for(let i=0;i<4;i++){const a=best.q[i],b=best.q[(i+1)%4];const j=[0,1,2,3].find(j=>Math.hypot(c.q[j][0]-b[0],c.q[j][1]-b[1])<tol&&Math.hypot(c.q[(j+1)%4][0]-a[0],c.q[(j+1)%4][1]-a[1])<tol);
+        if(j===undefined)continue;const u=[best.q[(i+2)%4],best.q[(i+3)%4],c.q[(j+2)%4],c.q[(j+3)%4]];const uq=order(u);if(!convex(uq))continue;const ua=area(uq)/n;if(ua>T.maxArea||ua<best.areaFrac*1.4)continue;
+        const S=[0,1,2,3].map(k=>side(uq[k],uq[(k+1)%4]));const mn=Math.min(...S.map(v=>v.s));if(mn<0.5)continue;
+        const sc=Math.min(best.score,c.score)*(0.6+0.4*mn);if(!mg||ua>mg.areaFrac)mg={q:uq,score:Math.max(sc,T.minScore),edge:S.reduce((x,v)=>x+v.s,0)/4,minS:mn,con:S.reduce((x,v)=>x+v.c,0)/4,minC:Math.min(...S.map(v=>v.c)),areaFrac:ua}}}
+    if(opt.debug)console.log('FOLD',mg&&JSON.stringify(mg.q.map(p=>p.map(Math.round))));if(!mg)break;cands.push(mg);best=mg}
+  // OUTWARD SNAP: a strong inner print line (white footer strip, panel border) can beat the faint real paper edge. Try moving each side outward
+  // (both endpoints independently) to a parallel-ish line that still has aligned gradient support and a paper/background step; keep the farthest.
+  let q=best.q.map(p=>p.slice());if(T.snapOut&&!opt.noSnap){const cx=q.reduce((s,p)=>s+p[0],0)/4,cy=q.reduce((s,p)=>s+p[1],0)/4;
+    const sup=(a,b)=>{const L=Math.hypot(b[0]-a[0],b[1]-a[1]),nx=-(b[1]-a[1])/L,ny=(b[0]-a[0])/L,st=Math.max(8,Math.round(L/3));let hit=0,tot=0,dd=0;
+      for(let k=2;k<st-1;k++){const t=k/st,px=a[0]+(b[0]-a[0])*t,py=a[1]+(b[1]-a[1])*t;let ok=0;
+        for(let o=-1;o<=1&&!ok;o++){const x=Math.round(px+nx*o),y=Math.round(py+ny*o);if(x<1||y<1||x>=W-1||y>=H-1)continue;const i=y*W+x;if(gm[i]<T.snapG)continue;if(Math.abs(gx[i]*nx+gy[i]*ny)/(gm[i]+1e-6)>0.9)ok=1}
+        tot++;hit+=ok;const xi=Math.round(px+nx*3),yi=Math.round(py+ny*3),xo=Math.round(px-nx*3),yo=Math.round(py-ny*3);
+        if(xi>=0&&yi>=0&&xi<W&&yi<H&&xo>=0&&yo>=0&&xo<W&&yo<H){const I=(yi*W+xi)*4,O=(yo*W+xo)*4;dd+=Math.hypot(d[I]-d[O],d[I+1]-d[O+1],d[I+2]-d[O+2])}}
+      return {s:tot?hit/tot:0,d:tot?dd/tot:0}};
+    for(let it=0;it<T.snapIt;it++)for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],L=Math.hypot(b[0]-a[0],b[1]-a[1]);let nx=-(b[1]-a[1])/L,ny=(b[0]-a[0])/L; // normal pointing away from centre
+      const mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2;if(nx*(mx-cx)+ny*(my-cy)<0){nx=-nx;ny=-ny}
+      const opp=Math.hypot(q[(i+2)%4][0]-a[0],q[(i+2)%4][1]-a[1]),maxO=Math.round(Math.min(T.snapMax*Math.max(opp,L*0.5),Math.max(W,H)*0.12));let bo=null;
+      const sw=Math.round(maxO*0.5);for(let o1=T.snapMin;o1<=maxO;o1+=2)for(let o2=Math.max(T.snapMin,o1-sw);o2<=Math.min(maxO,o1+sw);o2+=2){
+        const A=[a[0]+nx*o1,a[1]+ny*o1],B=[b[0]+nx*o2,b[1]+ny*o2];if([A,B].some(p=>p[0]<2||p[1]<2||p[0]>W-3||p[1]>H-3))continue;const r=sup(A,B);
+        if(r.s>=T.snapSup&&r.d>=T.snapD&&(!bo||o1+o2<bo.o||(o1+o2===bo.o&&r.s>bo.s))){bo={o:o1+o2,A,B,s:r.s}}}
+      if(bo){
+        // refine +-1 around coarse winner by max support
+        const base=bo;let o1b=null;for(let o1=-1;o1<=1;o1++)for(let o2=-1;o2<=1;o2++){const A=[base.A[0]+nx*o1,base.A[1]+ny*o1],B=[base.B[0]+nx*o2,base.B[1]+ny*o2];if([A,B].some(p=>p[0]<2||p[1]<2||p[0]>W-3||p[1]>H-3))continue;const r=sup(A,B);if(r.s>bo.s&&r.d>=T.snapD)bo={o:base.o+o1+o2,A,B,s:r.s}}}
+      if(opt.debug)console.log('SNAP side',i,bo&&JSON.stringify({o:bo.o,s:+bo.s.toFixed(2)}));
+      if(bo){// move side: new corners = intersection of new side line with neighbouring sides
+        const P=q[(i+3)%4],N=q[(i+2)%4];const X=(p1,p2,p3,p4)=>{const d1=[p2[0]-p1[0],p2[1]-p1[1]],d2=[p4[0]-p3[0],p4[1]-p3[1]],den=d1[0]*d2[1]-d1[1]*d2[0];if(Math.abs(den)<1e-6)return null;const t=((p3[0]-p1[0])*d2[1]-(p3[1]-p1[1])*d2[0])/den;return [p1[0]+d1[0]*t,p1[1]+d1[1]*t]};
+        const na=X(bo.A,bo.B,P,a),nb=X(bo.A,bo.B,N,b);if(na&&nb){const nq=q.slice();nq[i]=na;nq[(i+1)%4]=nb;if(convex(nq)&&area(nq)/n<=T.maxArea&&nq.every(p=>p[0]>=-1&&p[1]>=-1&&p[0]<=W&&p[1]<=H))q=nq}}}
+    q=order(q);best.areaFrac=area(q)/n}
   let sharp=0,lm=0,c=0;let x0=1e9,x1=0,y0=1e9,y1=0;q.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1])});
   for(let y=Math.max(1,y0|0);y<Math.min(H-1,y1);y++)for(let x=Math.max(1,x0|0);x<Math.min(W-1,x1);x++){const i=y*W+x,l=4*g0[i]-g0[i-1]-g0[i+1]-g0[i-W]-g0[i+W];lm+=l;sharp+=l*l;c++}
   sharp=c?sharp/c-(lm/c)**2:0;
-  return {pts:q.map(p=>[Math.max(0,Math.min(W,p[0])),Math.max(0,Math.min(H,p[1]))]),score:best.score,edge:best.edge,minEdge:best.minS,contrast:best.con,areaFrac:best.areaFrac,sharp,n:cands.length};
+  return {pts:q.map(p=>[Math.max(0,Math.min(W,p[0])),Math.max(0,Math.min(H,p[1]))]),score:best.score,bgE:best.bgE,bgIn:best.bgIn,edge:best.edge,minEdge:best.minS,contrast:best.con,areaFrac:best.areaFrac,sharp,n:cands.length};
 }
 // focus measure: Laplacian energy normalised by gradient energy (contrast/content independent; blur by sigma cuts it ~1/sigma^2 vs 1/sigma).
 // ~0.5+ crisp, <0.25 visibly soft. Variance-of-Laplacian alone (Pech-Pacheco) depends on how much text is in view.
@@ -131,6 +199,28 @@ function sharpness(img,q){const W=img.width,H=img.height,d=img.data;let x0=0,y0=
   const L=i=>.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];let best=1e9; // per direction (x, y, both diagonals): 2nd-derivative energy / 1st-derivative energy; min catches motion blur
   for(const st of [1,W,W+1,W-1]){let sl=0,sg=0;for(let y=y0;y<y1;y+=1)for(let x=x0;x<x1;x+=1){const i=y*W+x,c=L(i),a=L(i-st),b=L(i+st),l=2*c-a-b,g=(b-a)/2;sl+=l*l;sg+=g*g}best=Math.min(best,sg>1?sl/(sg*4):0)}
   return best}
-root.PaperDetect={T,detectDoc,chromaSpread,sharpness,paperCue,flatCue,area,order};
+function inQuad(p,q,tol){if(inQ(p,q))return true;for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],dx=b[0]-a[0],dy=b[1]-a[1],t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy)));if(Math.hypot(a[0]+dx*t-p[0],a[1]+dy*t-p[1])<(tol||0))return true}return false}
+
+// CORNER REFINE (still images): per side, sample points along the edge, search along the normal for the strongest colour step that is
+// aligned with the side, robust line fit (trim worst 35%, refit), intersect neighbours. Fixes 1-3% corner error from the 240-300 px pass.
+function refine(img,q,opt){opt=opt||{};const W=img.width,H=img.height,d=img.data,R=Math.max(4,Math.round(Math.hypot(W,H)*(opt.r||0.04))),NS=40;
+  const px=(x,y,c)=>{x=Math.max(0,Math.min(W-1,x|0));y=Math.max(0,Math.min(H-1,y|0));return d[(y*W+x)*4+c]};
+  const step=(x,y,nx,ny)=>{let m=0;for(let c=0;c<3;c++){const a=px(x+nx*2,y+ny*2,c)+px(x+nx*3,y+ny*3,c),b=px(x-nx*2,y-ny*2,c)+px(x-nx*3,y-ny*3,c);m=Math.max(m,Math.abs(a-b)/2)}return m};
+  const cx=q.reduce((s,p)=>s+p[0],0)/4,cy=q.reduce((s,p)=>s+p[1],0)/4;const lines=[];let okSides=0;
+  for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],L=Math.hypot(b[0]-a[0],b[1]-a[1]);let nx=-(b[1]-a[1])/L,ny=(b[0]-a[0])/L;const P=[];
+    for(let k=2;k<NS-1;k++){const t=k/NS,x0=a[0]+(b[0]-a[0])*t,y0=a[1]+(b[1]-a[1])*t;let bm=0,bo=0;
+      for(let o=-R;o<=R;o++){const v=step(x0+nx*o,y0+ny*o,nx,ny)*(1-0.35*Math.abs(o)/R);if(v>bm){bm=v;bo=o}}
+      if(bm>=T.refMin)P.push([x0+nx*bo,y0+ny*bo,bm])}
+    const fit=pts=>{const n=pts.length,mx=pts.reduce((s,p)=>s+p[0],0)/n,my=pts.reduce((s,p)=>s+p[1],0)/n;let sxx=0,syy=0,sxy=0;for(const p of pts){sxx+=(p[0]-mx)**2;syy+=(p[1]-my)**2;sxy+=(p[0]-mx)*(p[1]-my)}
+      const th=0.5*Math.atan2(2*sxy,sxx-syy);return {mx,my,dx:Math.cos(th),dy:Math.sin(th)}};
+    let ln=null;if(P.length>=NS*0.45){ln=fit(P);for(let it=0;it<2;it++){const r=P.map(p=>Math.abs((p[0]-ln.mx)*ln.dy-(p[1]-ln.my)*ln.dx));const srt=r.slice().sort((u,v)=>u-v),cut=srt[Math.floor(r.length*0.65)];const S=P.filter((p,j)=>r[j]<=cut);if(S.length<6)break;ln=fit(S)}
+      const ang=Math.abs((b[0]-a[0])/L*ln.dy-(b[1]-a[1])/L*ln.dx);if(ang>0.12)ln=null}
+    if(ln)okSides++;lines.push(ln||{mx:(a[0]+b[0])/2,my:(a[1]+b[1])/2,dx:(b[0]-a[0])/L,dy:(b[1]-a[1])/L})}
+  const X=(l1,l2)=>{const den=l1.dx*l2.dy-l1.dy*l2.dx;if(Math.abs(den)<1e-6)return null;const t=((l2.mx-l1.mx)*l2.dy-(l2.my-l1.my)*l2.dx)/den;return [l1.mx+l1.dx*t,l1.my+l1.dy*t]};
+  const nq=[0,1,2,3].map(i=>X(lines[(i+3)%4],lines[i]));if(nq.some(p=>!p)||!convex(nq))return q;
+  const mv=Math.max(...nq.map((p,i)=>Math.hypot(p[0]-q[i][0],p[1]-q[i][1])));if(mv>Math.hypot(W,H)*0.12)return q;
+  return nq.map(p=>[Math.max(0,Math.min(W,p[0])),Math.max(0,Math.min(H,p[1]))])}
+T.refMin=14;
+root.PaperDetect={T,refine,inQuad,detectDoc,detectDocV,down,chromaSpread,sharpness,paperCue,flatCue,area,order};
 if(typeof module!=='undefined')module.exports=root.PaperDetect;
 })(typeof self!=='undefined'?self:globalThis);

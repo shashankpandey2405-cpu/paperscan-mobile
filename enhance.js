@@ -14,8 +14,8 @@ function outSize(q,W,H,maxSide){maxSide=maxSide||2000;
   const n2=[k2*m2[0]-m1[0],k2*m2[1]-m1[1],k2-1],n3=[k3*m3[0]-m1[0],k3*m3[1]-m1[1],k3-1];
   const L=Math.max(W,H);
   if(Math.abs(n2[2])>1e-3&&Math.abs(n3[2])>1e-3){const f2=-(n2[0]*n3[0]+n2[1]*n3[1])/(n2[2]*n3[2]);if(f2>0){f=Math.sqrt(f2)}}
-  // phones: f ~ 0.7..1.4 x long side. Implausible f (noise, near-frontal) -> assume 0.85 x long side.
-  if(!(f>0.5*L&&f<2.2*L)){f=0.85*L;how='prior-f'}else how='zhang';
+  // phones: f ~ 0.7..1.4 x long side. Implausible f (noise, near-frontal) -> assume 0.75 x long side (iPhone 26mm-eq main camera: f/L = 26/34.6).
+  if(!(f>0.5*L&&f<2.2*L)){f=0.75*L;how='prior-f'}else how='zhang';
   const nn=n=>(n[0]*n[0]+n[1]*n[1])/(f*f)+n[2]*n[2];const r=Math.sqrt(nn(n2)/nn(n3));
   if(isFinite(r)&&r>0.1&&r<10&&Math.abs(Math.log(r/naive))<0.7)ratio=r;else how='edges';
   // snap to common paper sizes only when already very close (A4/A-series 1:1.414, Letter 1:1.294)
@@ -26,9 +26,17 @@ function outSize(q,W,H,maxSide){maxSide=maxSide||2000;
 
 // ---- Magic enhance: background (paper+shadow) normalisation, ink-preserving levels, mild colour + sharpen ----
 // px: RGBA Uint8ClampedArray (modified in place)
-function bgMap(px,W,H){const S=Math.max(1,Math.round(Math.max(W,H)/96)),bw=Math.ceil(W/S),bh=Math.ceil(H/S),g=new Float32Array(bw*bh);
+function bgMap(px,W,H){const S=Math.max(1,Math.round(Math.max(W,H)/96)),bw=Math.ceil(W/S),bh=Math.ceil(H/S),g=new Float32Array(bw*bh),sat=new Float32Array(bw*bh);
   // block 85th-percentile luminance ~ paper (ignores dark text)
-  for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){const v=[];for(let y=by*S;y<Math.min(H,by*S+S);y+=Math.max(1,S>>2))for(let x=bx*S;x<Math.min(W,bx*S+S);x+=Math.max(1,S>>2)){const i=(y*W+x)*4;v.push(.299*px[i]+.587*px[i+1]+.114*px[i+2])}v.sort((a,b)=>a-b);g[by*bw+bx]=v[Math.floor(v.length*.85)]||0}
+  for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){const v=[];for(let y=by*S;y<Math.min(H,by*S+S);y+=Math.max(1,S>>2))for(let x=bx*S;x<Math.min(W,bx*S+S);x+=Math.max(1,S>>2)){const i=(y*W+x)*4;v.push(.299*px[i]+.587*px[i+1]+.114*px[i+2])}v.sort((a,b)=>a-b);g[by*bw+bx]=v[Math.floor(v.length*.85)]||0;
+    // block chroma at its bright pixels: printed colour panels (maroon, yellow) are NOT paper and must not define the shading map
+    let sm=0,sc=0;for(let y=by*S;y<Math.min(H,by*S+S);y+=Math.max(1,S>>2))for(let x=bx*S;x<Math.min(W,bx*S+S);x+=Math.max(1,S>>2)){const i=(y*W+x)*4,l=.299*px[i]+.587*px[i+1]+.114*px[i+2];if(l>=g[by*bw+bx]-12){sm+=Math.max(px[i],px[i+1],px[i+2])-Math.min(px[i],px[i+1],px[i+2]);sc++}}sat[by*bw+bx]=sc?sm/sc:0}
+  // paper blocks: neutral and bright relative to the page's brightest blocks. Others are filled from the nearest paper blocks (diffusion).
+  {const srt=Array.from(g).sort((a,b)=>a-b),top=srt[Math.floor(srt.length*0.95)]||1;const ok=new Uint8Array(g.length);let nok=0;for(let k=0;k<g.length;k++)if(sat[k]<=40&&g[k]>=0.55*top){ok[k]=1;nok++}
+    if(nok<g.length*0.04){for(let k=0;k<g.length;k++)g[k]=Math.max(g[k],top)}else if(nok<g.length){const v=Float32Array.from(g),o=Uint8Array.from(ok);
+      for(let it=0;it<bw+bh;it++){let ch=0;const nv=Float32Array.from(v),no=Uint8Array.from(o);for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){const k=y*bw+x;if(o[k])continue;let s=0,c=0;
+        for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){const xx=x+dx,yy=y+dy;if(xx<0||yy<0||xx>=bw||yy>=bh)continue;const j=yy*bw+xx;if(o[j]){s+=v[j];c++}}if(c){nv[k]=s/c;no[k]=1;ch=1}}
+        v.set(nv);o.set(no);if(!ch)break}g.set(v)}}
   // max filter r=2 (fill text holes), then box blur r=3 x2 (smooth shadows)
   let a=new Float32Array(g.length);for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){let mx=0;for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const yy=Math.min(bh-1,Math.max(0,y+dy)),xx=Math.min(bw-1,Math.max(0,x+dx));mx=Math.max(mx,g[yy*bw+xx])}a[y*bw+x]=mx}
   for(let it=0;it<2;it++){const b=new Float32Array(a.length);for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){let s=0,c=0;for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const yy=y+dy,xx=x+dx;if(yy<0||xx<0||yy>=bh||xx>=bw)continue;s+=a[yy*bw+xx];c++}b[y*bw+x]=s/c}a=b}
@@ -48,7 +56,10 @@ function enhance(px,W,H,mode){const bg=bgMap(px,W,H),n=W*H;
   // smooth curve: paper (>=white) -> 255, ink (<=B) -> near 0, mid-tones linear-ish (keeps thin strokes & grey table lines)
   const curve=v=>{let t=(v-B)/(Wt-B);t=t<0?0:t>1?1:t;return t*t*(3-2*t)*0.35+t*0.65};
   for(let k=0;k<n;k++){const i=k*4,l=Math.max(1e-3,(.299*px[i]+.587*px[i+1]+.114*px[i+2])/255),r=Lr[k],tL=curve(r)*255,s=tL/(l*255);
-    let R=px[i]*s,G=px[i+1]*s,Bc=px[i+2]*s;if(P.sat!==1){const m=(R+G+Bc)/3;R=m+(R-m)*P.sat;G=m+(G-m)*P.sat;Bc=m+(Bc-m)*P.sat}
+    let R=px[i]*s,G=px[i+1]*s,Bc=px[i+2]*s;
+    // printed colour (brochure panels, logos): keep the paper-normalised colour instead of the ink curve, which would crush it to black
+    {const mx=Math.max(px[i],px[i+1],px[i+2]),mn=Math.min(px[i],px[i+1],px[i+2]),cs=mx>8?(mx-mn)/mx:0,w=Math.max(0,Math.min(1,(cs-0.3)/0.3))*(mode==='gray'?0:1);
+      if(w>0){R=R*(1-w)+px[i]*w;G=G*(1-w)+px[i+1]*w;Bc=Bc*(1-w)+px[i+2]*w}}if(P.sat!==1){const m=(R+G+Bc)/3;R=m+(R-m)*P.sat;G=m+(G-m)*P.sat;Bc=m+(Bc-m)*P.sat}
     px[i]=R<0?0:R>255?255:R;px[i+1]=G<0?0:G>255?255:G;px[i+2]=Bc<0?0:Bc>255?255:Bc}
   if(P.sharp)sharpen(px,W,H,P.sharp)}
 function sharpen(d,W,H,amt){const s=new Uint8ClampedArray(d);for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=(y*W+x)*4;for(let c=0;c<3;c++){const b=(s[i+c]*4+s[i-4+c]+s[i+4+c]+s[i-W*4+c]+s[i+W*4+c])/8;const v=s[i+c]+amt*2*(s[i+c]-b);d[i+c]=v<0?0:v>255?255:v}}}

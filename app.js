@@ -25,7 +25,7 @@ $('#doneBtn').onclick=()=>show('pages'); $('#goPages').onclick=()=>show('pages')
 $('#pagesBack').onclick=()=>stream?show('cam'):startCam(); $('#retake').onclick=()=>stream?show('cam'):startCam();
 $('#editBack').onclick=()=>show('pages');
 $('#clearAll').onclick=()=>{if(pages.length&&confirm('Delete all pages?')){pages.length=0;counts();renderTray()}};
-$('#filePick').onchange=e=>{const f=e.target.files[0];if(!f)return;const im=new Image();im.onload=()=>{const c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;c.getContext('2d').drawImage(im,0,0);const q=detect(c,c.width,c.height);addPage(c,q?q.pts:null)};im.src=URL.createObjectURL(f)};
+$('#filePick').onchange=e=>{const f=e.target.files[0];if(!f)return;const im=new Image();im.onload=()=>{const c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;c.getContext('2d').drawImage(im,0,0);addPage(c,null)};im.src=URL.createObjectURL(f)};
 
 // ---------- detection: web/detect.js (Hough lines -> quad scoring; same code as test/regress.js) ----------
 let lastQuad=null; const DW=300;
@@ -38,8 +38,19 @@ function detect(src,w,h,live){
   dc.width=DW;dc.height=dh;dctx.imageSmoothingEnabled=true;dctx.imageSmoothingQuality='high';dctx.drawImage(mc,0,0,DW,dh);
   // speed: on a run of empty frames, pay the faint (chroma) 2nd pass only every 3rd frame unless the page was last found by it
   const nf=live&&!lastFaint&&emptyRun>=2&&(frameN++%3!==0);
-  const r=PaperDetect.detectDoc(dctx.getImageData(0,0,DW,dh),{noFaint:nf});if(live){emptyRun=r?0:emptyRun+1;lastFaint=!!(r&&r.faint)}if(!r)return null;
-  const k=w/DW;return {pts:r.pts.map(p=>[p[0]*k,p[1]*k]),score:r.score,sharp:r.sharp}}
+  // v8: outer-page pass (colour edges + background model + fold merge + outward snap, ~2x cost) runs on every 3rd live frame; its result is HELD
+  // for OUTER_HOLD ms so the cheap classic pass cannot flip the outline back to an inner panel of the same page.
+  const outerNow=!live||(outerN++%3===0);const now=performance.now();
+  let r=PaperDetect.detectDoc(dctx.getImageData(0,0,DW,dh),{noFaint:nf,outer:outerNow,outerW:live?240:[200,240,300]});
+  if(live){if(r&&r.outer)outerHold={pts:r.pts,score:r.score,t:now};
+    else if(outerHold&&now-outerHold.t<OUTER_HOLD){if(!r||r.pts.every(p=>PaperDetect.inQuad(p,outerHold.pts,0.03*DW)))r=r?Object.assign({},r,{pts:outerHold.pts,score:Math.max(r.score,outerHold.score),held:1}):(now-outerHold.t<OUTER_HOLD*0.5?{pts:outerHold.pts,score:outerHold.score,sharp:99,held:1}:null);else outerHold=null}
+    else outerHold=null;
+    emptyRun=r?0:emptyRun+1;lastFaint=!!(r&&r.faint)}if(!r)return null;
+  const k=w/DW;return {pts:r.pts.map(p=>[p[0]*k,p[1]*k]),score:r.score,sharp:r.sharp,outer:!!(r.outer||r.held)}}
+let outerHold=null,outerN=0;const OUTER_HOLD=700;
+// Auto Crop on a captured still: same v8 detector, multi-scale outer pass, on a 360px copy. Prefer it over the live quad when it is the larger outer page.
+function detectStill(c){const W=360,h=Math.round(W*c.height/c.width),t=document.createElement('canvas');t.width=W;t.height=h;const x=t.getContext('2d',{willReadFrequently:true});x.imageSmoothingQuality='high';x.drawImage(c,0,0,W,h);
+  const r=PaperDetect.detectDoc(x.getImageData(0,0,W,h),{outer:true,outerW:[200,240,300]});if(!r)return null;const k=c.width/W;return r.pts.map(p=>[p[0]*k,p[1]*k])}
 function polyArea(q){let a=0;for(let i=0;i<4;i++){const p=q[i],r=q[(i+1)%4];a+=p[0]*r[1]-r[0]*p[1]}return Math.abs(a)/2}
 
 // One-Euro filter per corner coordinate + lock hysteresis (outline stays put while hand shakes)
@@ -49,9 +60,11 @@ function OneEuro(minCut,beta){let xp=null,dxp=0,tp=0;const al=(c,dt)=>{const r=2
 const filt=[...Array(8)].map(()=>OneEuro(1.2,0.004));
 // thresholds (detector itself returns null below PaperDetect.T.minScore=0.6)
 const SHOW=0.6, UNLOCK=0.55, LOCK=0.72, AUTO=0.75, AUTO_MS=800, MISS_CLEAR=3;
-let smQ=null, lockScore=0, miss=0, good=0, locked=false, hiSince=0;
+let shrink=0;const SHRINK_N=8;let smQ=null, lockScore=0, miss=0, good=0, locked=false, hiSince=0;
 function track(q,t,diag){
   const ok=q&&q.score>=SHOW&&q.score>=(locked?UNLOCK:SHOW);
+  // once locked on a page, a smaller quad lying inside it (inner panel / ad box) is ignored for up to SHRINK_N frames
+  if(ok&&locked&&smQ&&polyArea(q.pts)<0.75*polyArea(smQ)&&q.pts.every(p=>PaperDetect.inQuad(p,smQ,0.03*diag))){if(++shrink<SHRINK_N){miss=0;return smQ}}else shrink=0;
   if(ok){
     if(smQ){let mv=0;for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(q.pts[i][0]-smQ[i][0],q.pts[i][1]-smQ[i][1]));
       if(mv>0.18*diag){filt.forEach(f=>f.reset());lockScore=0;good=0;locked=false;hiSince=0}}
@@ -98,6 +111,7 @@ function capture(quad,isAuto){
   addPage(c,quad,fv); setStatus('Captured page '+pages.length+'. Next page or tap Done.','#5f5'); hist=[];
 }
 function addPage(full,quad,fv){
+  const sq=detectStill(full);if(sq&&(!quad||polyArea(sq)>=polyArea(quad)*1.1&&quad.every(p=>PaperDetect.inQuad(p,sq,0.03*full.width))||!quad))quad=sq; // still re-detect: take the full outer page
   const warped=quad?warp(full,quad):full;
   const p={full,quad,autoQuad:quad,warped,mode:'magic',img:null,server:null,focus:fv};pages.push(p);counts();
   p.img=render(p); if(!$('#cam').classList.contains('on')||!batch){openCrop(pages.length-1)}
@@ -171,7 +185,7 @@ function cmove(e){if(cdrag<0)return;e.preventDefault();const p=cpt(e),f=cp.full,
   cdown.last=p;$('#autoCrop').classList.remove('sel');drawCrop()}
 cv.addEventListener('touchstart',cdown,{passive:false});cv.addEventListener('touchmove',cmove,{passive:false});cv.addEventListener('touchend',()=>cdrag=-1);
 cv.addEventListener('mousedown',cdown);addEventListener('mousemove',cmove);addEventListener('mouseup',()=>cdrag=-1);
-$('#autoCrop').onclick=()=>{const on=!$('#autoCrop').classList.contains('sel');cq=(on&&autoQ?autoQ:fullQ(cp.full)).map(p=>p.slice());$('#autoCrop').classList.toggle('sel',on);
+$('#autoCrop').onclick=()=>{const on=!$('#autoCrop').classList.contains('sel');if(on){const sq=detectStill(cp.full);if(sq)autoQ=sq}cq=(on&&autoQ?autoQ:fullQ(cp.full)).map(p=>p.slice());$('#autoCrop').classList.toggle('sel',on);
   $('#cropMsg').textContent=on&&!autoQ?'No edge found — adjust corners by hand.':'Drag the green corners/edges to fit the page.';drawCrop()};
 $('#cropAll').onclick=()=>{cq=fullQ(cp.full);$('#autoCrop').classList.remove('sel');drawCrop()};
 function rotFull(dir){const f=cp.full,c=document.createElement('canvas');c.width=f.height;c.height=f.width;const x=c.getContext('2d');
