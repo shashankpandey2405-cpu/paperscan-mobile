@@ -14,9 +14,10 @@ function LivePipe(D,TK,opt){opt=opt||{};const v10=!!opt.v10;const TR=TK.Tracker(
       if(r&&r.outer)hold={pts:r.pts,score:r.score,t:now};
       else if(hold&&now-hold.t<HOLD){if(!r||r.pts.every(p=>D.inQuad(p,hold.pts,0.03*W)))r=r?Object.assign({},r,{pts:hold.pts,score:Math.max(r.score,hold.score),held:1}):((v10?now-hold.t<HOLD*0.5:!outerNow)?{pts:hold.pts,score:hold.score,sharp:99,held:1}:null);else hold=null}
       else hold=null;emptyRun=r?0:emptyRun+1;lastFaint=!!(r&&r.faint)}
-    const q=TR.track(r?{pts:r.pts,score:r.score}:null,now,Math.hypot(W,img.height));self.locked=TR.S.locked;self.hiSince=TR.S.hiSince;self.raw=r;
+    const q=TR.track(r?{pts:r.pts,score:r.score}:null,now,Math.hypot(W,img.height));self.locked=TR.S.locked;self.lockedAt=TR.S.lockedAt;self.hiSince=TR.S.hiSince;self.raw=r;
     // v11 display vote: an unlocked outline is drawn only after 2 consecutive consistent detections (isolated noise hits on tubes never show)
-    if(!v10&&q&&!TR.S.locked&&TR.S.good<2)return null;return q};
+    // v12: no provisional (yellow) outline at all - only a locked page is drawn
+    if(!v10&&!TR.S.locked)return null;return q};
   return self}
 root.PaperLive={LivePipe};if(typeof module!=='undefined')module.exports=root.PaperLive;
 })(typeof self!=='undefined'?self:globalThis);

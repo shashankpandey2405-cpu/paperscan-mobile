@@ -42,7 +42,7 @@ function detectStill(c){const W=360,h=Math.round(W*c.height/c.width),t=document.
   const r=PaperDetect.detectDoc(x.getImageData(0,0,W,h),{outer:true,outerW:[200,240,300]});if(!r)return null;const k=c.width/W;return r.pts.map(p=>[p[0]*k,p[1]*k])}
 function polyArea(q){let a=0;for(let i=0;i<4;i++){const p=q[i],r=q[(i+1)%4];a+=p[0]*r[1]-r[0]*p[1]}return Math.abs(a)/2}
 
-const AUTO_MS=800;let locked=false,hiSince=0;const TR=LP.TR;
+const AUTO_MS=450;let locked=false,hiSince=0;const TR=LP.TR;
 
 function startLoop(){if(loopOn)return;loopOn=true;hist=[];requestAnimationFrame(tick)}
 let lastT=0;
@@ -55,8 +55,9 @@ function tick(t){
   if(!q){lastQuad=null;hist=[];setStatus('Looking for a page…');return}
   const s=Math.max(W/vw,H/vh), ox=(W-vw*s)/2, oy=(H-vh*s)/2;
   hist.push({q,t}); while(hist.length&&t-hist[0].t>900)hist.shift();
-  let mv=0; for(const h of hist)for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(h.q[i][0]-q[i][0],h.q[i][1]-q[i][1])/diag);
-  const sharpOk=!raw||raw.sharp>15, stable=mv<0.025, ready=locked&&stable&&sharpOk&&hiSince&&t-hiSince>=AUTO_MS;
+  let mv=0,mvS=0; for(const h of hist)if(t-h.t<=300)for(let i=0;i<4;i++)mvS=Math.max(mvS,Math.hypot(h.q[i][0]-q[i][0],h.q[i][1]-q[i][1])/diag);
+  for(const h of hist)for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(h.q[i][0]-q[i][0],h.q[i][1]-q[i][1])/diag);
+  const sharpOk=!raw||raw.sharp>15, stable=mv<0.025, ready=locked&&sharpOk&&t-LP.lockedAt>=AUTO_MS&&mvS<0.04; // v12: auto fires 450ms after green if the last 300ms are calm (no 800ms high-score streak)
   lastQuad=q.map(p=>p.slice());
   octx.beginPath(); q.forEach((p,i)=>{const x=ox+p[0]*s,y=oy+p[1]*s;i?octx.lineTo(x,y):octx.moveTo(x,y)}); octx.closePath();
   octx.lineJoin='round';octx.lineWidth=locked?6:4; octx.strokeStyle=locked?'#19d36b':'#ffcc33'; octx.fillStyle=locked?'#19d36b33':'#ffcc3322'; octx.fill(); octx.stroke();

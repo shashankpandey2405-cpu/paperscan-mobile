@@ -10,12 +10,14 @@ function quadIoU(a,b){const xs=a.concat(b).map(p=>p[0]),ys=a.concat(b).map(p=>p[
   for(let gy=0;gy<N;gy++)for(let gx=0;gx<N;gx++){const p=[x0+(gx+.5)*(x1-x0)/N,y0+(gy+.5)*(y1-y0)/N],A=inQ(p,a),B=inQ(p,b);i+=A&&B;u+=A||B}return u?i/u:0}
 // thresholds. v8 -> v9: LOCK .72->.70, UNLOCK .55->.50 (EMA), unlock now needs BAD_N sustained bad frames or IoU<IOU_BREAK
 // v11: SHOW .60->.55, LOCK .70->.66 (Madhoor per-frame outer score jitters .54-.83 under camera noise; geometry is stable)
-const P={SHOW:0.55,UNLOCK:0.50,LOCK:0.66,AUTO:0.75,GOOD_N:3,BAD_N:6,MISS_CLEAR:6,IOU_BREAK:0.45,JUMP_FREE:0.18,JUMP_LOCKED:0.35,SHRINK_N:8,EMA_FREE:0.4,EMA_LOCKED:0.15,MINCUT_LOCKED:0.6};
+// v12: INSTANT lock = 2 consecutive raw hits agreeing (IoU>=INSTANT_IOU) with min score>=INSTANT_MIN, no EMA ramp
+const P={INSTANT_IOU:0.85,INSTANT_MIN:0.60,INSTANT_MEAN:0.68,SHOW:0.55,UNLOCK:0.50,LOCK:0.66,AUTO:0.75,GOOD_N:3,BAD_N:6,MISS_CLEAR:6,IOU_BREAK:0.45,JUMP_FREE:0.18,JUMP_LOCKED:0.35,SHRINK_N:8,EMA_FREE:0.4,EMA_LOCKED:0.15,MINCUT_LOCKED:0.6};
 function Tracker(inQuad){
-  const filt=[...Array(8)].map(()=>OneEuro(1.2,0.004));const S={smQ:null,lockScore:0,miss:0,bad:0,good:0,locked:false,hiSince:0,shrink:0};
-  const reset=()=>{filt.forEach(f=>f.reset());S.smQ=null;S.locked=false;S.lockScore=0;S.good=0;S.bad=0;S.hiSince=0};
+  const filt=[...Array(8)].map(()=>OneEuro(1.2,0.004));const S={prevRaw:null,lockedAt:0,smQ:null,lockScore:0,miss:0,bad:0,good:0,locked:false,hiSince:0,shrink:0};
+  const reset=()=>{S.prevRaw=null;filt.forEach(f=>f.reset());S.smQ=null;S.locked=false;S.lockScore=0;S.good=0;S.bad=0;S.hiSince=0};
   function track(q,t,diag){
-    const ok=q&&q.score>=P.SHOW;
+    const ok=q&&q.score>=P.SHOW;const pr=S.prevRaw;S.prevRaw=ok?{pts:q.pts,score:q.score}:null;
+    const inst=ok&&pr&&Math.min(pr.score,q.score)>=P.INSTANT_MIN&&(pr.score+q.score)/2>=P.INSTANT_MEAN&&quadIoU(pr.pts,q.pts)>=P.INSTANT_IOU;
     // once locked, a smaller quad lying inside it (inner panel / ad box) is ignored for up to SHRINK_N frames
     if(ok&&S.locked&&S.smQ&&polyArea(q.pts)<0.75*polyArea(S.smQ)&&q.pts.every(p=>inQuad(p,S.smQ,0.03*diag))){if(++S.shrink<P.SHRINK_N){S.miss=0;return S.smQ}}else S.shrink=0;
     if(ok){
@@ -34,7 +36,7 @@ function Tracker(inQuad){
       if(S.smQ&&S.miss<2){S.good=Math.max(0,S.good-1);return S.smQ} // one dropout before lock does not restart the streak
       reset();return null}
     if(S.locked){if(S.bad>=P.BAD_N||S.lockScore<P.UNLOCK){S.locked=false;S.good=0;S.bad=0}}
-    else S.locked=!!S.smQ&&S.good>=P.GOOD_N&&S.lockScore>=P.LOCK;
+    else{S.locked=!!S.smQ&&(inst||S.good>=P.GOOD_N&&S.lockScore>=P.LOCK);if(S.locked){S.lockedAt=t;S.lockScore=Math.max(S.lockScore,P.LOCK);S.bad=0}}
     return S.smQ}
   return {track,S,reset}}
 root.PaperTrack={Tracker,P,quadIoU,polyArea};if(typeof module!=='undefined')module.exports=root.PaperTrack;
