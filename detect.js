@@ -30,6 +30,7 @@ function blur(a,W,H){const t=new Float32Array(a.length),o=new Float32Array(a.len
 function inter(l1,l2){const a1=Math.cos(l1.t),b1=Math.sin(l1.t),a2=Math.cos(l2.t),b2=Math.sin(l2.t),det=a1*b2-a2*b1;if(Math.abs(det)<1e-6)return null;
   return [(l1.r*b2-l2.r*b1)/det,(a1*l2.r-a2*l1.r)/det]}
 function convex(q){let s=0;for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];const z=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]);if(Math.abs(z)<1e-9)return false;if(!s)s=Math.sign(z);else if(Math.sign(z)!==s)return false}return true}
+const T={minArea:0.06,maxArea:0.62,maxAspect:3.2,minSide:0.5,maxSideSpread:0.45,minContrast:20,minScore:0.6,cornerMargin:0.01};
 function detectDoc(img,opt){
   opt=opt||{};const W=img.width,H=img.height,d=img.data,n=W*H,diag=Math.hypot(W,H);
   const g0=new Float32Array(n);for(let i=0;i<n;i++)g0[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
@@ -67,22 +68,22 @@ function detectDoc(img,opt){
         if(c<a)continue; // each pair-of-pairs once (c>a)
         const p=[inter(lines[a],lines[c]),inter(lines[c],lines[b]),inter(lines[b],lines[e]),inter(lines[e],lines[a])];
         if(p.some(v=>!v||v[0]<-m||v[1]<-m||v[0]>W+m||v[1]>H+m))continue;if(!convex(p))continue;
-        const q=order(p),qa=area(q),af=qa/n;if(af<0.04||af>0.72)continue;
-        const sd=i=>Math.hypot(q[i][0]-q[(i+1)%4][0],q[i][1]-q[(i+1)%4][1]),w1=(sd(0)+sd(2))/2,h1=(sd(1)+sd(3))/2,ar=Math.max(w1,h1)/Math.min(w1,h1);if(ar>4)continue;
+        const q=order(p),qa=area(q),af=qa/n;if(af<T.minArea||af>T.maxArea)continue;
+        const sd=i=>Math.hypot(q[i][0]-q[(i+1)%4][0],q[i][1]-q[(i+1)%4][1]),w1=(sd(0)+sd(2))/2,h1=(sd(1)+sd(3))/2,ar=Math.max(w1,h1)/Math.min(w1,h1);if(ar>T.maxAspect)continue;
         if(Math.min(sd(0),sd(2))/Math.max(sd(0),sd(2))<0.5||Math.min(sd(1),sd(3))/Math.max(sd(1),sd(3))<0.5)continue;
         // interior angles 50..130 deg
         let badAng=false;for(let i=0;i<4;i++){const A=q[(i+3)%4],B=q[i],C=q[(i+1)%4],v1=[A[0]-B[0],A[1]-B[1]],v2=[C[0]-B[0],C[1]-B[1]];const cosA=(v1[0]*v2[0]+v1[1]*v2[1])/(Math.hypot(...v1)*Math.hypot(...v2));if(Math.abs(cosA)>0.65)badAng=true}if(badAng)continue;
         const S=[0,1,2,3].map(i=>side(q[i],q[(i+1)%4]));
         // q is clockwise on screen -> inward normal (-dy,dx)/L points inside; c>0 means inside brighter
-        const sup=S.map(v=>v.s),minS=Math.min(...sup),meanS=sup.reduce((x,y)=>x+y)/4;if(minS<0.3)continue;
-        const minC=Math.min(...S.map(v=>v.c)),meanC=S.reduce((x,v)=>x+v.c,0)/4;if(minC<10)continue;
-        let cb=0;for(const pp of q)if(pp[0]<2||pp[1]<2||pp[0]>W-3||pp[1]>H-3)cb++;
+        const sup=S.map(v=>v.s),minS=Math.min(...sup),meanS=sup.reduce((x,y)=>x+y)/4;if(minS<T.minSide||Math.max(...sup)-minS>T.maxSideSpread)continue;
+        const minC=Math.min(...S.map(v=>v.c)),meanC=S.reduce((x,v)=>x+v.c,0)/4;if(minC<T.minContrast)continue;
+        const cm=T.cornerMargin*Math.max(W,H);let cb=0;for(const pp of q)if(pp[0]<cm||pp[1]<cm||pp[0]>W-1-cm||pp[1]>H-1-cm)cb++;let out=0;const om=0.005*Math.max(W,H);for(const pp of q)if(pp[0]<-om||pp[1]<-om||pp[0]>W-1+om||pp[1]>H-1+om)out++;if(out||cb>=2)continue;
         const score=(0.5*meanS+0.5*minS)*Math.min(1,meanC/40)*Math.min(1,0.6+minC/50)*(cb>=2?0.5:1)*(af>0.55?0.75:1)*(0.85+0.15*Math.min(1,af/0.15));
         const minK=Math.min(...S.map(v=>v.k));const score2=score*Math.pow(Math.min(1,minK/2.2),2); // soft shadow boundaries are not paper edges
         cands.push({q,score:score2,edge:meanS,minS,minC,ks:S.map(v=>+v.k.toFixed(2)),fill:1,con:meanC,areaFrac:af})}}}
   cands.sort((a,b)=>b.score-a.score);if(opt.debug)console.log(lines.map(l=>[(l.t*180/Math.PI)|0,l.r,l.v|0]).join(' '));if(opt.debug)console.log('lines',lines.length,'eth',eth|0,'\n'+cands.slice(0,6).map(c=>JSON.stringify({q:c.q.map(p=>p.map(Math.round)),s:+c.score.toFixed(3),e:+c.edge.toFixed(2),mn:+c.minS.toFixed(2),con:c.con|0,mc:c.minC|0,k:c.ks,a:+c.areaFrac.toFixed(3)})).join('\n'));
   // prefer the OUTERMOST plausible page: a candidate that contains the top one with similar score wins (inner printed boxes / QR frames lose)
-  let best=cands[0];if(!best)return null;
+  let best=cands[0];if(!best||best.score<T.minScore)return null;
   const inside=(p,q)=>{let ins=false;for(let i=0,j=3;i<4;j=i++){const a=q[i],b=q[j];if((a[1]>p[1])!==(b[1]>p[1])&&p[0]<(b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0])ins=!ins}return ins};
   const segD=(p,q)=>{let m=1e9;for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],dx=b[0]-a[0],dy=b[1]-a[1],t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy)));m=Math.min(m,Math.hypot(a[0]+dx*t-p[0],a[1]+dy*t-p[1]))}return m};
   const p90=(q,ex,thr)=>{let x0=1e9,x1=0,y0=1e9,y1=0;q.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1])});const v=[];
@@ -90,7 +91,7 @@ function detectDoc(img,opt){
     if(v.length<20)return 0;if(thr)return v.filter(z=>z>=thr).length/v.length;v.sort((a,b)=>a-b);return v[Math.floor(v.length*0.9)]};
   let bp90=-1;for(let it=0;it<1;it++){const tol=Math.max(W,H)*0.015;let up=null;
     if(opt.debug)for(const c of cands)if(c.areaFrac>best.areaFrac*1.15&&c.areaFrac<best.areaFrac*2.2&&c.score>best.score*0.7)console.log("C",JSON.stringify(c.q.map(p=>p.map(Math.round))),c.score.toFixed(3),c.minS.toFixed(2),c.minC|0,c.areaFrac.toFixed(3),best.q.map(p=>(inside(p,c.q)?"in":segD(p,c.q).toFixed(1))).join());
-    for(const c of cands){if(c===best||c.areaFrac<best.areaFrac*1.15||c.areaFrac>best.areaFrac*6||c.minC<10||c.score<best.score*0.8||c.minS<0.5)continue;
+    for(const c of cands){if(c===best||c.areaFrac<best.areaFrac*1.15||c.areaFrac>best.areaFrac*6||c.minC<T.minContrast||c.score<best.score*0.8||c.minS<0.5)continue;
       if(best.q.every(p=>inside(p,c.q)||segD(p,c.q)<tol)&&p90(c.q,best.q,0.8*(bp90<0?(bp90=p90(best.q)):bp90))>=0.5&&(!up||c.score*Math.sqrt(c.areaFrac)>up.score*Math.sqrt(up.areaFrac)))up=c}
     if(opt.debug)console.log("UP",up&&JSON.stringify(up.q));if(!up)break;best=up}const q=best.q;
   let sharp=0,lm=0,c=0;let x0=1e9,x1=0,y0=1e9,y1=0;q.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1])});
@@ -98,6 +99,6 @@ function detectDoc(img,opt){
   sharp=c?sharp/c-(lm/c)**2:0;
   return {pts:q.map(p=>[Math.max(0,Math.min(W,p[0])),Math.max(0,Math.min(H,p[1]))]),score:best.score,edge:best.edge,minEdge:best.minS,contrast:best.con,areaFrac:best.areaFrac,sharp,n:cands.length};
 }
-root.PaperDetect={detectDoc,area,order};
+root.PaperDetect={T,detectDoc,area,order};
 if(typeof module!=='undefined')module.exports=root.PaperDetect;
 })(typeof self!=='undefined'?self:globalThis);

@@ -44,15 +44,20 @@ function OneEuro(minCut,beta){let xp=null,dxp=0,tp=0;const al=(c,dt)=>{const r=2
   return {reset(){xp=null;dxp=0},f(x,t){if(xp===null){xp=x;tp=t;return x}const dt=Math.max(1e-3,(t-tp)/1000);tp=t;const dx=(x-xp)/dt;dxp=dxp+al(1,dt)*(dx-dxp);
     const c=minCut+beta*Math.abs(dxp);xp=xp+al(c,dt)*(x-xp);return xp}}}
 const filt=[...Array(8)].map(()=>OneEuro(1.2,0.004));
-let smQ=null, lockScore=0, miss=0, locked=false;
+// thresholds (detector itself returns null below PaperDetect.T.minScore=0.6)
+const SHOW=0.6, UNLOCK=0.55, LOCK=0.72, AUTO=0.75, AUTO_MS=800, MISS_CLEAR=3;
+let smQ=null, lockScore=0, miss=0, good=0, locked=false, hiSince=0;
 function track(q,t,diag){
-  if(q&&q.score>=0.45){
+  const ok=q&&q.score>=SHOW&&q.score>=(locked?UNLOCK:SHOW);
+  if(ok){
     if(smQ){let mv=0;for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(q.pts[i][0]-smQ[i][0],q.pts[i][1]-smQ[i][1]));
-      if(mv>0.18*diag){ if(locked&&miss<4&&q.score<0.8){miss++;return smQ} filt.forEach(f=>f.reset());lockScore=0;locked=false }}
-    miss=0;lockScore=Math.min(1,lockScore*0.7+q.score*0.3+0.08);
+      if(mv>0.18*diag){filt.forEach(f=>f.reset());lockScore=0;good=0;locked=false;hiSince=0}}
+    miss=0;good++;lockScore=lockScore*0.6+q.score*0.4;
     smQ=q.pts.map((p,i)=>[filt[2*i].f(p[0],t),filt[2*i+1].f(p[1],t)]);
-  }else{miss++;lockScore*=0.85;if(miss>(locked?8:2)||lockScore<0.25){smQ=null;locked=false;filt.forEach(f=>f.reset())}}
-  locked=!!smQ&&(locked?lockScore>0.45:lockScore>0.7);return smQ}
+    if(q.score>=AUTO){if(!hiSince)hiSince=t}else hiSince=0;
+  }else{miss++;good=0;hiSince=0;lockScore*=0.7;
+    if(miss>=MISS_CLEAR||!locked){smQ=null;locked=false;lockScore=0;filt.forEach(f=>f.reset())}}
+  locked=!!smQ&&(locked?lockScore>=UNLOCK:(good>=3&&lockScore>=LOCK));return smQ}
 
 function startLoop(){if(loopOn)return;loopOn=true;hist=[];requestAnimationFrame(tick)}
 let lastT=0;
@@ -66,7 +71,7 @@ function tick(t){
   const s=Math.max(W/vw,H/vh), ox=(W-vw*s)/2, oy=(H-vh*s)/2;
   hist.push({q,t}); while(hist.length&&t-hist[0].t>900)hist.shift();
   let mv=0; for(const h of hist)for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(h.q[i][0]-q[i][0],h.q[i][1]-q[i][1])/diag);
-  const sharpOk=!raw||raw.sharp>15, stable=mv<0.025, ready=locked&&stable&&sharpOk&&t-hist[0].t>=750;
+  const sharpOk=!raw||raw.sharp>15, stable=mv<0.025, ready=locked&&stable&&sharpOk&&hiSince&&t-hiSince>=AUTO_MS;
   lastQuad=q.map(p=>p.slice());
   octx.beginPath(); q.forEach((p,i)=>{const x=ox+p[0]*s,y=oy+p[1]*s;i?octx.lineTo(x,y):octx.moveTo(x,y)}); octx.closePath();
   octx.lineJoin='round';octx.lineWidth=locked?6:4; octx.strokeStyle=locked?'#19d36b':'#ffcc33'; octx.fillStyle=locked?'#19d36b33':'#ffcc3322'; octx.fill(); octx.stroke();
