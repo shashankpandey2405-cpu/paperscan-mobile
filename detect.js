@@ -39,15 +39,23 @@ function paperCue(img,q){const W=img.width,H=img.height,d=img.data;const c=[q.re
   if(L.length<30)return {ok:false};const med=a=>a.slice().sort((u,v)=>u-v)[a.length>>1];const ml=med(L),ms=med(S),tx=L.filter(v=>v<ml-35).length/L.length;
   return {ok:ms<=T.paperMaxSat&&ml>=T.paperMinLum&&tx>=T.paperMinText&&tx<=T.paperMaxText,sat:ms,lum:ml,text:tx}}
 // flatness cue: a flat page has no symmetric "both edges darker than middle" shading across an axis; a cylinder (tube, bottle, can) does.
-function flatCue(img,q){const W=img.width,H=img.height,d=img.data,NB=10,res=[];
+function flatCue(img,q){const W=img.width,H=img.height,d=img.data,NB=10,res=[],r2=[],PR=[];
   const at=(s,t)=>{const a=q[0],b=q[1],c=q[2],e=q[3];return [(a[0]*(1-s)+b[0]*s)*(1-t)+(e[0]*(1-s)+c[0]*s)*t,(a[1]*(1-s)+b[1]*s)*(1-t)+(e[1]*(1-s)+c[1]*s)*t]};
-  for(const ax of [0,1]){const prof=[];for(let k=0;k<NB;k++){const L=[];const u=0.06+0.88*(k+0.5)/NB;
+  const cv=prof=>{const c=Math.max(...prof.slice(3,7))||1,e0=(prof[0]+prof[1])/2,e1=(prof[NB-1]+prof[NB-2])/2;return Math.min(c-e0,c-e1)/c};
+  for(const ax of [0,1]){const prof=[],pw=[];for(let k=0;k<NB;k++){const L=[];const u=0.06+0.88*(k+0.5)/NB;
       for(let j=0;j<40;j++){const v=0.08+0.84*(j+0.5)/40;const p=ax?at(v,u):at(u,v);const x=p[0]|0,y=p[1]|0;if(x<0||y<0||x>=W||y>=H)continue;const i=(y*W+x)*4;L.push(.299*d[i]+.587*d[i+1]+.114*d[i+2])}
-      L.sort((a,b)=>a-b);prof.push(L.length?L[Math.floor(L.length*0.7)]:0)}
-    const c=Math.max(...prof.slice(3,7))||1,e0=(prof[0]+prof[1])/2,e1=(prof[NB-1]+prof[NB-2])/2;res.push(Math.min(c-e0,c-e1)/c)}
-  return {curve:Math.max(res[0],res[1]),ax:res}}
-T.maxCurve=0.08;T.colorK=0.6;T.colorGrad=0.8;T.maxLines=40;T.snapOut=1;T.snapG=30;T.snapSup=0.8;T.snapD=14;T.snapMax=0.35;T.snapMin=5;T.snapIt=3;T.foldMerge=1;T.foldScore=0.6;T.cohVote=0;T.cohLow=0.3;T.cohMin=0.85;T.bgModel=1;T.bgRing=0.06;T.bgRatio=0.5;T.bgW=0.4;T.areaW=0.5;T.inW=0.5;T.maxBgIn=0.6;T.outer=1;T.outerW=240;T.outerSolo=0.65;T.outerGrow=1.15;T.bgRef=0.5;
-const OLD={colorK:0,colorGrad:0,maxLines:28,snapOut:0,foldMerge:0,bgModel:0,maxCurve:0.06};
+      L.sort((a,b)=>a-b);prof.push(L.length?L[Math.floor(L.length*0.7)]:0);pw.push(L.length?L[Math.floor(L.length*T.flatHiP)]:0)}PR.push(prof);
+    res.push(cv(prof));r2.push(cv(pw))}
+  // v10: a cylinder darkens toward its rims at EVERY brightness level; a printed page with a dark photo (Madhoor flyer) only at the 70th pct.
+  // Per axis: when the 70th-pct curve is >=0.25 above the 95th-pct one, the dip is print content; then allow mild curl (glossy flyer) up to maxCurvePrint on the 95th pct.
+  const c70=Math.max(res[0],res[1]),cHi=Math.max(r2[0],r2[1]);const uni=pf=>{let tv=0;for(let k=1;k<NB;k++)tv+=Math.abs(pf[k]-pf[k-1]);const m=Math.max(...pf);return tv>1?(2*m-pf[0]-pf[NB-1])/tv:1};const UN=[uni(PR[0]),uni(PR[1])];
+  // jagged profile (unimodal share of total variation < flatJag): bright print/glare bands, not a smooth cylinder rim falloff
+  // (jag only counts on a page whose other axis is clearly print-dominated by the gap test; a plain receipt never qualifies)
+  const gap=i=>T.flatHi&&res[i]-r2[i]>=T.flatPrintGap&&r2[i]<=T.maxCurvePrint,jag=i=>T.flatHi&&UN[i]<T.flatJag&&r2[i]<=T.maxCurvePrint;
+  const ok=i=>res[i]<=T.maxCurve||gap(i)||(jag(i)&&gap(1-i));
+  const pr=c70>T.maxCurve&&ok(0)&&ok(1);return {curve:pr?T.maxCurve*Math.max(0,...[0,1].map(i=>res[i]<=T.maxCurve?res[i]/T.maxCurve:r2[i]/T.maxCurvePrint)):c70,print:pr,uni:UN,c70,cHi,ax:res,axHi:r2,prof:PR}}
+T.maxCurve=0.08;T.flatHi=1;T.flatHiP=0.95;T.flatPrintGap=0.25;T.maxCurvePrint=0.16;T.flatJag=0.3;T.colorK=0.6;T.colorGrad=0.8;T.maxLines=40;T.snapOut=1;T.snapG=30;T.snapSup=0.8;T.snapD=14;T.snapMax=0.35;T.snapMin=5;T.snapIt=3;T.foldMerge=1;T.foldScore=0.6;T.cohVote=0;T.cohLow=0.3;T.cohMin=0.85;T.bgModel=1;T.bgRing=0.06;T.bgRatio=0.5;T.bgW=0.4;T.areaW=0.5;T.inW=0.5;T.maxBgIn=0.6;T.outer=1;T.outerW=240;T.outerSolo=0.65;T.outerGrow=1.15;T.bgRef=0.5;
+const OLD={flatHi:0,colorK:0,colorGrad:0,maxLines:28,snapOut:0,foldMerge:0,bgModel:0,maxCurve:0.06};
 function withT(o,f){const sv={};for(const k in o){sv[k]=T[k];T[k]=o[k]}try{return f()}finally{Object.assign(T,sv)}}
 function down(img,SW){if(img.width<=SW)return {im:img,k:1};const W=img.width,H=img.height,sh=Math.round(SW*H/W),o=new Uint8ClampedArray(SW*sh*4),kx=W/SW,ky=H/sh,d=img.data;
   for(let y=0;y<sh;y++)for(let x=0;x<SW;x++){let r=0,g=0,b=0,c=0;for(let yy=Math.floor(y*ky);yy<Math.floor((y+1)*ky);yy++)for(let xx=Math.floor(x*kx);xx<Math.floor((x+1)*kx);xx++){const i=(yy*W+xx)*4;r+=d[i];g+=d[i+1];b+=d[i+2];c++}
