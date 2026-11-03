@@ -1,0 +1,24 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="theme-color" content="#111">
+<link rel="manifest" href="manifest.json"><title>PaperScan</title><link rel="stylesheet" href="app.css"></head>
+<body>
+<section id="home" class="screen on"><h1>📄 PaperScan</h1><p>Point your phone at a paper. It finds the page and snaps it for you.</p>
+<button id="start" class="big">Start camera</button><p id="homeMsg" class="msg"></p>
+<button id="goPages" class="ghost">My pages (<span class="cnt">0</span>)</button>
+<label class="ghost file">Pick a photo instead<input id="filePick" type="file" accept="image/*" hidden></label></section>
+<section id="cam" class="screen"><video id="video" playsinline muted autoplay></video><canvas id="overlay"></canvas>
+<div id="status" class="status">Starting camera…</div>
+<div class="camBar"><button id="autoBtn" class="pill">Auto: ON</button><button id="shutter" class="shutter" aria-label="Capture"></button>
+<button id="doneBtn" class="pill">Done (<span class="cnt">0</span>)</button></div><div id="flash"></div></section>
+<section id="crop" class="screen"><div class="top"><button id="cropCancel" class="pill">✕</button><span id="cropTitle">1/1</span><button id="cropAll" class="pill">All</button></div>
+<div class="pageWrap" id="cropWrap"><canvas id="cropCv"></canvas></div><p class="msg" id="cropMsg">Drag the green corners/edges to fit the page.</p>
+<div class="modes"><button id="autoCrop" class="sel">Auto Crop</button><button id="rotL">⟲ Left</button><button id="rotR">Right ⟳</button><button id="cropOk" class="okb">✔</button></div></section>
+<section id="edit" class="screen"><div class="top"><button id="editBack" class="pill">‹ Pages</button><span id="editTitle">Page</span><button id="retake" class="pill">Scan more</button></div>
+<div class="pageWrap"><img id="pageImg"></div><p id="editMsg" class="msg"></p>
+<div class="modes filt"><button data-m="original">Original</button><button data-m="magic">OmniFix</button><button data-m="color">No Shadow</button><button data-m="gray">Gray</button><button data-m="bw">B&amp;W</button><button data-m="lighten">Lighten</button></div>
+<div class="modes"><button id="retake2">Retake</button><button id="cropBtn">Crop</button><button id="ocrBtn">Extract Text</button><button id="srvBtn">Server HQ</button><button id="editOk" class="okb">✔</button></div></section>
+<section id="pages" class="screen"><div class="top"><button id="pagesBack" class="pill">‹ Camera</button><span>Pages</span><button id="clearAll" class="pill">Clear</button></div>
+<div id="tray"></div><p id="pagesMsg" class="msg"></p><div class="bottom"><button id="pdfBtn" class="big">Download PDF</button></div></section>
+<canvas id="work" hidden></canvas>
+<script src="vendor/jspdf.umd.min.js"></script><script src="app.js"></script></body></html>
