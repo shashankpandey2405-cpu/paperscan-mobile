@@ -53,27 +53,9 @@ function detectStill(c){const W=360,h=Math.round(W*c.height/c.width),t=document.
   const r=PaperDetect.detectDoc(x.getImageData(0,0,W,h),{outer:true,outerW:[200,240,300]});if(!r)return null;const k=c.width/W;return r.pts.map(p=>[p[0]*k,p[1]*k])}
 function polyArea(q){let a=0;for(let i=0;i<4;i++){const p=q[i],r=q[(i+1)%4];a+=p[0]*r[1]-r[0]*p[1]}return Math.abs(a)/2}
 
-// One-Euro filter per corner coordinate + lock hysteresis (outline stays put while hand shakes)
-function OneEuro(minCut,beta){let xp=null,dxp=0,tp=0;const al=(c,dt)=>{const r=2*Math.PI*c*dt;return r/(r+1)};
-  return {reset(){xp=null;dxp=0},f(x,t){if(xp===null){xp=x;tp=t;return x}const dt=Math.max(1e-3,(t-tp)/1000);tp=t;const dx=(x-xp)/dt;dxp=dxp+al(1,dt)*(dx-dxp);
-    const c=minCut+beta*Math.abs(dxp);xp=xp+al(c,dt)*(x-xp);return xp}}}
-const filt=[...Array(8)].map(()=>OneEuro(1.2,0.004));
-// thresholds (detector itself returns null below PaperDetect.T.minScore=0.6)
-const SHOW=0.6, UNLOCK=0.55, LOCK=0.72, AUTO=0.75, AUTO_MS=800, MISS_CLEAR=3;
-let shrink=0;const SHRINK_N=8;let smQ=null, lockScore=0, miss=0, good=0, locked=false, hiSince=0;
-function track(q,t,diag){
-  const ok=q&&q.score>=SHOW&&q.score>=(locked?UNLOCK:SHOW);
-  // once locked on a page, a smaller quad lying inside it (inner panel / ad box) is ignored for up to SHRINK_N frames
-  if(ok&&locked&&smQ&&polyArea(q.pts)<0.75*polyArea(smQ)&&q.pts.every(p=>PaperDetect.inQuad(p,smQ,0.03*diag))){if(++shrink<SHRINK_N){miss=0;return smQ}}else shrink=0;
-  if(ok){
-    if(smQ){let mv=0;for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(q.pts[i][0]-smQ[i][0],q.pts[i][1]-smQ[i][1]));
-      if(mv>0.18*diag){filt.forEach(f=>f.reset());lockScore=0;good=0;locked=false;hiSince=0}}
-    miss=0;good++;lockScore=lockScore*0.6+q.score*0.4;
-    smQ=q.pts.map((p,i)=>[filt[2*i].f(p[0],t),filt[2*i+1].f(p[1],t)]);
-    if(q.score>=AUTO){if(!hiSince)hiSince=t}else hiSince=0;
-  }else{miss++;good=0;hiSince=0;lockScore*=0.7;
-    if(miss>=MISS_CLEAR||!locked){smQ=null;locked=false;lockScore=0;filt.forEach(f=>f.reset())}}
-  locked=!!smQ&&(locked?lockScore>=UNLOCK:(good>=3&&lockScore>=LOCK));return smQ}
+// v9 shake-tolerant tracker lives in track.js (also used by web/test/shake_test.js)
+const TR=PaperTrack.Tracker(PaperDetect.inQuad), AUTO_MS=800;let locked=false,hiSince=0;
+function track(q,t,diag){const r=TR.track(q,t,diag);locked=TR.S.locked;hiSince=TR.S.hiSince;return r}
 
 function startLoop(){if(loopOn)return;loopOn=true;hist=[];requestAnimationFrame(tick)}
 let lastT=0;
