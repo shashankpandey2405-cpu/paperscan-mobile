@@ -9,7 +9,8 @@ function inQ(p,q){let ins=false;for(let i=0,j=3;i<4;j=i++){const a=q[i],b=q[j];i
 function quadIoU(a,b){const xs=a.concat(b).map(p=>p[0]),ys=a.concat(b).map(p=>p[1]);const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys),N=24;let i=0,u=0;
   for(let gy=0;gy<N;gy++)for(let gx=0;gx<N;gx++){const p=[x0+(gx+.5)*(x1-x0)/N,y0+(gy+.5)*(y1-y0)/N],A=inQ(p,a),B=inQ(p,b);i+=A&&B;u+=A||B}return u?i/u:0}
 // thresholds. v8 -> v9: LOCK .72->.70, UNLOCK .55->.50 (EMA), unlock now needs BAD_N sustained bad frames or IoU<IOU_BREAK
-const P={SHOW:0.6,UNLOCK:0.50,LOCK:0.70,AUTO:0.75,GOOD_N:3,BAD_N:6,MISS_CLEAR:6,IOU_BREAK:0.45,JUMP_FREE:0.18,JUMP_LOCKED:0.35,SHRINK_N:8,EMA_FREE:0.4,EMA_LOCKED:0.15,MINCUT_LOCKED:0.6};
+// v11: SHOW .60->.55, LOCK .70->.66 (Madhoor per-frame outer score jitters .54-.83 under camera noise; geometry is stable)
+const P={SHOW:0.55,UNLOCK:0.50,LOCK:0.66,AUTO:0.75,GOOD_N:3,BAD_N:6,MISS_CLEAR:6,IOU_BREAK:0.45,JUMP_FREE:0.18,JUMP_LOCKED:0.35,SHRINK_N:8,EMA_FREE:0.4,EMA_LOCKED:0.15,MINCUT_LOCKED:0.6};
 function Tracker(inQuad){
   const filt=[...Array(8)].map(()=>OneEuro(1.2,0.004));const S={smQ:null,lockScore:0,miss:0,bad:0,good:0,locked:false,hiSince:0,shrink:0};
   const reset=()=>{filt.forEach(f=>f.reset());S.smQ=null;S.locked=false;S.lockScore=0;S.good=0;S.bad=0;S.hiSince=0};

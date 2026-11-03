@@ -31,31 +31,18 @@ $('#filePick').onchange=e=>{const f=e.target.files[0];if(!f)return;const im=new 
 let lastQuad=null; const DW=300;
 const dc=document.createElement('canvas'), dctx=dc.getContext('2d',{willReadFrequently:true});
 const mc=document.createElement('canvas'), mctx=mc.getContext('2d');
-let emptyRun=0,lastFaint=false,frameN=0,dtAvg=60;
-function detect(src,w,h,live){
-  const dh=Math.round(DW*h/w);
+// v11: detect cadence + outer hold + tracker live in live.js (PaperLive.LivePipe), the exact code web/test/lockstress.js runs.
+const LP=PaperLive.LivePipe(PaperDetect,PaperTrack);
+function detectLive(src,w,h,t){const dh=Math.round(DW*h/w);
   mc.width=DW*2;mc.height=dh*2;mctx.imageSmoothingEnabled=true;mctx.imageSmoothingQuality='high';mctx.drawImage(src,0,0,mc.width,mc.height);
   dc.width=DW;dc.height=dh;dctx.imageSmoothingEnabled=true;dctx.imageSmoothingQuality='high';dctx.drawImage(mc,0,0,DW,dh);
-  // speed: on a run of empty frames, pay the faint (chroma) 2nd pass only every 3rd frame unless the page was last found by it
-  const nf=live&&!lastFaint&&emptyRun>=2&&(frameN++%3!==0);
-  // v8: outer-page pass (colour edges + background model + fold merge + outward snap, ~2x cost) runs on every 3rd live frame; its result is HELD
-  // for OUTER_HOLD ms so the cheap classic pass cannot flip the outline back to an inner panel of the same page.
-  const outerNow=!live||(outerN++%3===0);const now=performance.now();
-  let r=PaperDetect.detectDoc(dctx.getImageData(0,0,DW,dh),{noFaint:nf,outer:outerNow,outerW:live?240:[200,240,300]});
-  if(live){if(r&&r.outer)outerHold={pts:r.pts,score:r.score,t:now};
-    else if(outerHold&&now-outerHold.t<OUTER_HOLD){if(!r||r.pts.every(p=>PaperDetect.inQuad(p,outerHold.pts,0.03*DW)))r=r?Object.assign({},r,{pts:outerHold.pts,score:Math.max(r.score,outerHold.score),held:1}):(now-outerHold.t<OUTER_HOLD*0.5?{pts:outerHold.pts,score:outerHold.score,sharp:99,held:1}:null);else outerHold=null}
-    else outerHold=null;
-    emptyRun=r?0:emptyRun+1;lastFaint=!!(r&&r.faint)}if(!r)return null;
-  const k=w/DW;return {pts:r.pts.map(p=>[p[0]*k,p[1]*k]),score:r.score,sharp:r.sharp,outer:!!(r.outer||r.held)}}
-let outerHold=null,outerN=0;const OUTER_HOLD=700;
+  const q=LP.step(dctx.getImageData(0,0,DW,dh),t,true);locked=LP.locked;hiSince=LP.hiSince;if(!q)return null;const k=w/DW;return q.map(p=>[p[0]*k,p[1]*k])}
 // Auto Crop on a captured still: same v8 detector, multi-scale outer pass, on a 360px copy. Prefer it over the live quad when it is the larger outer page.
 function detectStill(c){const W=360,h=Math.round(W*c.height/c.width),t=document.createElement('canvas');t.width=W;t.height=h;const x=t.getContext('2d',{willReadFrequently:true});x.imageSmoothingQuality='high';x.drawImage(c,0,0,W,h);
   const r=PaperDetect.detectDoc(x.getImageData(0,0,W,h),{outer:true,outerW:[200,240,300]});if(!r)return null;const k=c.width/W;return r.pts.map(p=>[p[0]*k,p[1]*k])}
 function polyArea(q){let a=0;for(let i=0;i<4;i++){const p=q[i],r=q[(i+1)%4];a+=p[0]*r[1]-r[0]*p[1]}return Math.abs(a)/2}
 
-// v9 shake-tolerant tracker lives in track.js (also used by web/test/shake_test.js)
-const TR=PaperTrack.Tracker(PaperDetect.inQuad), AUTO_MS=800;let locked=false,hiSince=0;
-function track(q,t,diag){const r=TR.track(q,t,diag);locked=TR.S.locked;hiSince=TR.S.hiSince;return r}
+const AUTO_MS=800;let locked=false,hiSince=0;const TR=LP.TR;
 
 function startLoop(){if(loopOn)return;loopOn=true;hist=[];requestAnimationFrame(tick)}
 let lastT=0;
@@ -64,7 +51,7 @@ function tick(t){
   if(t-lastT<Math.max(66,dtAvg*1.6)||!video.videoWidth||busy)return; lastT=t;
   const vw=video.videoWidth,vh=video.videoHeight, W=ov.clientWidth,H=ov.clientHeight, dpr=devicePixelRatio||1;
   if(ov.width!==W*dpr){ov.width=W*dpr;ov.height=H*dpr}
-  const diag=Math.hypot(vw,vh), t0=performance.now(), raw=detect(video,vw,vh,true), q=track(raw,t,diag); dtAvg=dtAvg*0.8+(performance.now()-t0)*0.2; octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
+  const diag=Math.hypot(vw,vh), t0=performance.now(), q=detectLive(video,vw,vh,t), raw=LP.raw; dtAvg=dtAvg*0.8+(performance.now()-t0)*0.2; octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
   if(!q){lastQuad=null;hist=[];setStatus('Looking for a page…');return}
   const s=Math.max(W/vw,H/vh), ox=(W-vw*s)/2, oy=(H-vh*s)/2;
   hist.push({q,t}); while(hist.length&&t-hist[0].t>900)hist.shift();
