@@ -1,4 +1,4 @@
-const C='paperscan-v2',F=['./','index.html','app.css','app.js','vendor/jspdf.umd.min.js','manifest.json'];
+const C='paperscan-v3-1793697279',F=['./','index.html','app.css','app.js','detect.js','vendor/jspdf.umd.min.js','manifest.json'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(C).then(c=>c.addAll(F)));self.skipWaiting()});
 self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;

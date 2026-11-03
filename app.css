@@ -21,3 +21,4 @@ button,.file{font:inherit;color:#fff;border:0;border-radius:14px;padding:14px 18
 
 .okb{background:#19a35b;min-width:64px;font-size:22px}#cropCv{touch-action:none;max-width:100%;max-height:100%}
 .filt{flex-wrap:nowrap;overflow-x:auto;justify-content:flex-start}.filt button{flex:0 0 auto}
+.camTop{position:absolute;top:calc(env(safe-area-inset-top) + 64px);right:12px;display:flex;gap:8px}.camTop .pill{min-width:76px;min-height:40px;padding:8px 12px}.pill.sel{background:#19a35b}

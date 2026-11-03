@@ -1,8 +1,7 @@
 'use strict';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const video=$('#video'), ov=$('#overlay'), octx=ov.getContext('2d');
-const pages=[]; let cur=-1, stream=null, auto=true, loopOn=false, hist=[], lastCap=0, busy=false;
-const SW=200; const sc=document.createElement('canvas'); const sctx=sc.getContext('2d',{willReadFrequently:true});
+const pages=[]; let cur=-1, stream=null, auto=true, batch=false, torch=false, loopOn=false, hist=[], lastCap=0, busy=false;
 function show(id){$$('.screen').forEach(e=>e.classList.toggle('on',e.id===id)); if(id==='cam')startLoop(); else loopOn=false; if(id==='pages')renderTray();}
 function setStatus(t,c){const s=$('#status');s.textContent=t;s.style.color=c||'#fff'}
 function counts(){$$('.cnt').forEach(e=>e.textContent=pages.length)}
@@ -14,10 +13,13 @@ async function startCam(){
   try{
     if(!stream) stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});
     video.srcObject=stream; await video.play(); show('cam');
+    try{const tr=stream.getVideoTracks()[0],cap=tr.getCapabilities?tr.getCapabilities():{};$('#torchBtn').hidden=!cap.torch;try{await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}}catch(e){}
   }catch(e){$('#homeMsg').textContent=(e.name==='NotAllowedError'?'Camera blocked. Tap "aA" > Website Settings > Camera > Allow, then reload.':'Camera error: '+e.message)}
 }
 $('#start').onclick=startCam;
 $('#autoBtn').onclick=()=>{auto=!auto;$('#autoBtn').textContent='Auto: '+(auto?'ON':'OFF');hist=[]};
+$('#modeBtn').onclick=()=>{batch=!batch;$('#modeBtn').textContent=batch?'Batch':'Single'};
+$('#torchBtn').onclick=async()=>{const tr=stream&&stream.getVideoTracks()[0];if(!tr)return;try{torch=!torch;await tr.applyConstraints({advanced:[{torch}]});$('#torchBtn').classList.toggle('sel',torch)}catch(e){torch=false;setStatus('Flash not supported on this browser','#fc3')}};
 $('#shutter').onclick=()=>capture(lastQuad);
 $('#doneBtn').onclick=()=>show('pages'); $('#goPages').onclick=()=>show('pages');
 $('#pagesBack').onclick=()=>stream?show('cam'):startCam(); $('#retake').onclick=()=>stream?show('cam'):startCam();
@@ -25,60 +27,54 @@ $('#editBack').onclick=()=>show('pages');
 $('#clearAll').onclick=()=>{if(pages.length&&confirm('Delete all pages?')){pages.length=0;counts();renderTray()}};
 $('#filePick').onchange=e=>{const f=e.target.files[0];if(!f)return;const im=new Image();im.onload=()=>{const c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;c.getContext('2d').drawImage(im,0,0);const q=detect(c,c.width,c.height);addPage(c,q?q.pts:null)};im.src=URL.createObjectURL(f)};
 
-// ---------- detection (small-frame paper mask -> largest blob -> 4 extreme corners) ----------
-let lastQuad=null;
+// ---------- detection: web/detect.js (Hough lines -> quad scoring; same code as test/regress.js) ----------
+let lastQuad=null; const DW=300;
+const dc=document.createElement('canvas'), dctx=dc.getContext('2d',{willReadFrequently:true});
+const mc=document.createElement('canvas'), mctx=mc.getContext('2d');
 function detect(src,w,h){
-  const sh=Math.round(SW*h/w); sc.width=SW; sc.height=sh; sctx.drawImage(src,0,0,SW,sh);
-  const d=sctx.getImageData(0,0,SW,sh).data, n=SW*sh, sc2=new Float32Array(n), g=new Float32Array(n);
-  const hist256=new Uint32Array(256);
-  for(let i=0;i<n;i++){const r=d[i*4],gg=d[i*4+1],b=d[i*4+2],mx=Math.max(r,gg,b),mn=Math.min(r,gg,b);
-    g[i]=.299*r+.587*gg+.114*b; let v=g[i]-0.8*(mx-mn); v=v<0?0:v>255?255:v; sc2[i]=v; hist256[v|0]++;}
-  // Otsu
-  let sum=0;for(let i=0;i<256;i++)sum+=i*hist256[i];let sB=0,wB=0,best=0,th=128;
-  for(let t=0;t<256;t++){wB+=hist256[t];if(!wB)continue;const wF=n-wB;if(!wF)break;sB+=t*hist256[t];const mB=sB/wB,mF=(sum-sB)/wF,v=wB*wF*(mB-mF)**2;if(v>best){best=v;th=t}}
-  const m=new Uint8Array(n);for(let i=0;i<n;i++)m[i]=sc2[i]>th?1:0;
-  // largest component
-  const lab=new Int32Array(n),st=new Int32Array(n);let bestL=0,bestA=0,L=0;
-  for(let i=0;i<n;i++){if(!m[i]||lab[i])continue;L++;let sp=0,a=0;st[sp++]=i;lab[i]=L;
-    while(sp){const p=st[--sp];a++;const x=p%SW,y=(p/SW)|0;
-      if(x>0&&m[p-1]&&!lab[p-1]){lab[p-1]=L;st[sp++]=p-1} if(x<SW-1&&m[p+1]&&!lab[p+1]){lab[p+1]=L;st[sp++]=p+1}
-      if(y>0&&m[p-SW]&&!lab[p-SW]){lab[p-SW]=L;st[sp++]=p-SW} if(y<sh-1&&m[p+SW]&&!lab[p+SW]){lab[p+SW]=L;st[sp++]=p+SW}}
-    if(a>bestA){bestA=a;bestL=L}}
-  if(bestA<n*0.12) return null;
-  let tl=[0,0,1e9],tr=[0,0,-1e9],br=[0,0,-1e9],bl=[0,0,1e9];
-  for(let i=0;i<n;i++){if(lab[i]!==bestL)continue;const x=i%SW,y=(i/SW)|0,s=x+y,df=x-y;
-    if(s<tl[2])tl=[x,y,s]; if(s>br[2])br=[x,y,s]; if(df>tr[2])tr=[x,y,df]; if(df<bl[2])bl=[x,y,df];}
-  const q=[tl,tr,br,bl].map(p=>[p[0],p[1]]); const area=polyArea(q);
-  if(area<n*0.15||bestA/area<0.75||!convex(q)) return null;
-  // touching frame edge on all sides = probably not a page
-  // sharpness: Laplacian variance inside bbox
-  let lv=0,lm=0,c=0;for(let y=1;y<sh-1;y+=1)for(let x=1;x<SW-1;x++){const i=y*SW+x;if(lab[i]!==bestL)continue;const l=4*g[i]-g[i-1]-g[i+1]-g[i-SW]-g[i+SW];lm+=l;lv+=l*l;c++}
-  const sharp=c?lv/c-(lm/c)**2:0, k=w/SW;
-  return {pts:q.map(p=>[p[0]*k,p[1]*k]),sharp,fill:bestA/area,areaFrac:area/n};
-}
+  const dh=Math.round(DW*h/w);
+  mc.width=DW*2;mc.height=dh*2;mctx.imageSmoothingEnabled=true;mctx.imageSmoothingQuality='high';mctx.drawImage(src,0,0,mc.width,mc.height);
+  dc.width=DW;dc.height=dh;dctx.imageSmoothingEnabled=true;dctx.imageSmoothingQuality='high';dctx.drawImage(mc,0,0,DW,dh);
+  const r=PaperDetect.detectDoc(dctx.getImageData(0,0,DW,dh));if(!r)return null;
+  const k=w/DW;return {pts:r.pts.map(p=>[p[0]*k,p[1]*k]),score:r.score,sharp:r.sharp}}
 function polyArea(q){let a=0;for(let i=0;i<4;i++){const p=q[i],r=q[(i+1)%4];a+=p[0]*r[1]-r[0]*p[1]}return Math.abs(a)/2}
-function convex(q){let s=0;for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];const z=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]);if(z===0)return false;if(!s)s=Math.sign(z);else if(Math.sign(z)!==s)return false}return true}
+
+// One-Euro filter per corner coordinate + lock hysteresis (outline stays put while hand shakes)
+function OneEuro(minCut,beta){let xp=null,dxp=0,tp=0;const al=(c,dt)=>{const r=2*Math.PI*c*dt;return r/(r+1)};
+  return {reset(){xp=null;dxp=0},f(x,t){if(xp===null){xp=x;tp=t;return x}const dt=Math.max(1e-3,(t-tp)/1000);tp=t;const dx=(x-xp)/dt;dxp=dxp+al(1,dt)*(dx-dxp);
+    const c=minCut+beta*Math.abs(dxp);xp=xp+al(c,dt)*(x-xp);return xp}}}
+const filt=[...Array(8)].map(()=>OneEuro(1.2,0.004));
+let smQ=null, lockScore=0, miss=0, locked=false;
+function track(q,t,diag){
+  if(q&&q.score>=0.45){
+    if(smQ){let mv=0;for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(q.pts[i][0]-smQ[i][0],q.pts[i][1]-smQ[i][1]));
+      if(mv>0.18*diag){ if(locked&&miss<4&&q.score<0.8){miss++;return smQ} filt.forEach(f=>f.reset());lockScore=0;locked=false }}
+    miss=0;lockScore=Math.min(1,lockScore*0.7+q.score*0.3+0.08);
+    smQ=q.pts.map((p,i)=>[filt[2*i].f(p[0],t),filt[2*i+1].f(p[1],t)]);
+  }else{miss++;lockScore*=0.85;if(miss>(locked?8:2)||lockScore<0.25){smQ=null;locked=false;filt.forEach(f=>f.reset())}}
+  locked=!!smQ&&(locked?lockScore>0.45:lockScore>0.7);return smQ}
 
 function startLoop(){if(loopOn)return;loopOn=true;hist=[];requestAnimationFrame(tick)}
 let lastT=0;
 function tick(t){
   if(!loopOn)return; requestAnimationFrame(tick);
-  if(t-lastT<90||!video.videoWidth||busy)return; lastT=t;
+  if(t-lastT<110||!video.videoWidth||busy)return; lastT=t;
   const vw=video.videoWidth,vh=video.videoHeight, W=ov.clientWidth,H=ov.clientHeight, dpr=devicePixelRatio||1;
   if(ov.width!==W*dpr){ov.width=W*dpr;ov.height=H*dpr}
-  const q=detect(video,vw,vh); octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
-  if(!q){lastQuad=null;hist=[];setStatus('Looking for a page… put paper on a darker table');return}
+  const diag=Math.hypot(vw,vh), raw=detect(video,vw,vh), q=track(raw,t,diag); octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
+  if(!q){lastQuad=null;hist=[];setStatus('Looking for a page…');return}
   const s=Math.max(W/vw,H/vh), ox=(W-vw*s)/2, oy=(H-vh*s)/2;
-  hist.push({q:q.pts,t}); while(hist.length&&t-hist[0].t>1000)hist.shift();
-  const diag=Math.hypot(vw,vh); let mv=0; for(const h of hist)for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(h.q[i][0]-q.pts[i][0],h.q[i][1]-q.pts[i][1])/diag);
-  const span=hist.length?t-hist[0].t:0, stable=mv<0.02, sharpOk=q.sharp>18, ready=stable&&sharpOk&&span>=850;
-  const good=stable&&sharpOk; lastQuad=q.pts;
-  octx.beginPath(); q.pts.forEach((p,i)=>{const x=ox+p[0]*s,y=oy+p[1]*s;i?octx.lineTo(x,y):octx.moveTo(x,y)}); octx.closePath();
-  octx.lineWidth=4; octx.strokeStyle=good?'#2f2':'#fc3'; octx.fillStyle=good?'#2f23':'#fc32'; octx.fill(); octx.stroke();
-  if(!sharpOk)setStatus('Page found. Hold still — image is blurry','#fc3');
-  else if(!stable)setStatus('Page found. Hold steady…','#fc3');
-  else setStatus(auto?'Good! Hold still, capturing…':'Good! Tap the white button','#5f5');
-  if(auto&&ready&&t-lastCap>2500){lastCap=t;capture(q.pts)}
+  hist.push({q,t}); while(hist.length&&t-hist[0].t>900)hist.shift();
+  let mv=0; for(const h of hist)for(let i=0;i<4;i++)mv=Math.max(mv,Math.hypot(h.q[i][0]-q[i][0],h.q[i][1]-q[i][1])/diag);
+  const sharpOk=!raw||raw.sharp>15, stable=mv<0.025, ready=locked&&stable&&sharpOk&&t-hist[0].t>=750;
+  lastQuad=q.map(p=>p.slice());
+  octx.beginPath(); q.forEach((p,i)=>{const x=ox+p[0]*s,y=oy+p[1]*s;i?octx.lineTo(x,y):octx.moveTo(x,y)}); octx.closePath();
+  octx.lineJoin='round';octx.lineWidth=locked?6:4; octx.strokeStyle=locked?'#19d36b':'#ffcc33'; octx.fillStyle=locked?'#19d36b33':'#ffcc3322'; octx.fill(); octx.stroke();
+  if(locked){octx.fillStyle='#fff';q.forEach(p=>{octx.beginPath();octx.arc(ox+p[0]*s,oy+p[1]*s,6,0,7);octx.fill()})}
+  if(!locked)setStatus('Page found… hold steady','#fc3');
+  else if(!sharpOk)setStatus('Hold still — blurry','#fc3');
+  else setStatus(auto?'Locked. Capturing…':'Locked. Tap the shutter','#5f5');
+  if(auto&&ready&&t-lastCap>2500){lastCap=t;capture(lastQuad)}
 }
 
 // ---------- capture + warp ----------
@@ -91,7 +87,7 @@ function capture(quad){
 function addPage(full,quad){
   const warped=quad?warp(full,quad):full;
   const p={full,quad,autoQuad:quad,warped,mode:'magic',img:null,server:null};pages.push(p);counts();
-  p.img=render(p); if(!$('#cam').classList.contains('on')||!auto){openCrop(pages.length-1)}
+  p.img=render(p); if(!$('#cam').classList.contains('on')||!batch){openCrop(pages.length-1)}
 }
 function solve(A,b){const n=b.length;for(let i=0;i<n;i++){let mx=i;for(let r=i+1;r<n;r++)if(Math.abs(A[r][i])>Math.abs(A[mx][i]))mx=r;[A[i],A[mx]]=[A[mx],A[i]];[b[i],b[mx]]=[b[mx],b[i]];
   for(let r=i+1;r<n;r++){const f=A[r][i]/A[i][i];for(let c=i;c<n;c++)A[r][c]-=f*A[i][c];b[r]-=f*b[i]}}
@@ -124,19 +120,23 @@ function render(p){
   for(let i=0;i<d.length;i+=4){
     if(p.mode==='gray'||p.mode==='lighten'){const g=(.299*d[i]+.587*d[i+1]+.114*d[i+2])/(.299*bg[i]+.587*bg[i+1]+.114*bg[i+2]+1)*255;if(p.mode==='gray'){let v=(g-40)*255/208;v=v<0?0:v>255?255:v;d[i]=d[i+1]=d[i+2]=v}else{for(let c=0;c<3;c++){let v=d[i+c]*1.25+25;d[i+c]=v>255?255:v}}continue}
     if(p.mode==='bw'){const g=(.299*d[i]+.587*d[i+1]+.114*d[i+2])/(.299*bg[i]+.587*bg[i+1]+.114*bg[i+2]+1);const v=g>0.78?255:0;d[i]=d[i+1]=d[i+2]=v;continue}
-    const wp=p.mode==='magic'?235:248, k=p.mode==='magic'?1.25:1.0;
+    const wp=p.mode==='magic'?218:248, k=p.mode==='magic'?1.3:1.0, bp=p.mode==='magic'?70:40;
     let r=d[i]/(bg[i]+1)*255,g=d[i+1]/(bg[i+1]+1)*255,bl=d[i+2]/(bg[i+2]+1)*255;
     const L=(r+g+bl)/3; r=L+(r-L)*k; g=L+(g-L)*k; bl=L+(bl-L)*k;
-    const lv=v=>{v=(v-40)*255/(wp-40);return v<0?0:v>255?255:p.mode==='magic'?255*Math.pow(v/255,1.15):v};
+    const lv=v=>{v=(v-bp)*255/(wp-bp);return v<0?0:v>255?255:p.mode==='magic'?255*Math.pow(v/255,1.35):v};
     d[i]=lv(r);d[i+1]=lv(g);d[i+2]=lv(bl)}
-  x.putImageData(id,0,0);return c.toDataURL(p.mode==='bw'?'image/png':'image/jpeg',.9)}
+  if(p.mode==='magic')sharpen(id,W,H,0.8);
+  x.putImageData(id,0,0);return c.toDataURL(p.mode==='bw'?'image/png':'image/jpeg',.92)}
+// unsharp mask (3x3 box) -> crisp ink, keeps white paper white
+function sharpen(id,W,H,amt){const d=id.data,src=new Uint8ClampedArray(d);for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=(y*W+x)*4;
+  for(let c=0;c<3;c++){let s=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)s+=src[i+(dy*W+dx)*4+c];const v=src[i+c]+amt*(src[i+c]-s/9);d[i+c]=v<0?0:v>255?255:v}}}
 
 // ---------- edit / tray / pdf ----------
 function openEdit(i){cur=i;const p=pages[i];$('#editTitle').textContent='Page '+(i+1);$('#pageImg').src=p.server||p.img;
   $$('.modes button[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===p.mode&&!p.server));$('#editMsg').textContent=p.quad?'':'No page edge found — full photo kept.';show('edit')}
 $$('.modes button[data-m]').forEach(b=>b.onclick=()=>{const p=pages[cur];p.mode=b.dataset.m;p.server=null;$('#editMsg').textContent='Working…';
   setTimeout(()=>{p.img=render(p);openEdit(cur);$('#editMsg').textContent=''},20)});
-$('#rotBtn').onclick=()=>{const p=pages[cur],s=p.warped,c=document.createElement('canvas');c.width=s.height;c.height=s.width;const x=c.getContext('2d');x.translate(c.width,0);x.rotate(Math.PI/2);x.drawImage(s,0,0);p.warped=c;p.server=null;p.img=render(p);openEdit(cur)};
+($('#rotBtn')||{}).onclick=()=>{const p=pages[cur],s=p.warped,c=document.createElement('canvas');c.width=s.height;c.height=s.width;const x=c.getContext('2d');x.translate(c.width,0);x.rotate(Math.PI/2);x.drawImage(s,0,0);p.warped=c;p.server=null;p.img=render(p);openEdit(cur)};
 $('#srvBtn').onclick=async()=>{const p=pages[cur];$('#editMsg').textContent='Sending to server (Python pipeline)…';
   try{const blob=await new Promise(r=>p.full.toBlob(r,'image/jpeg',.92));const m=({original:'color',lighten:'color'})[p.mode]||p.mode;
     const r=await fetch('api/scan?mode='+m,{method:'POST',body:blob});if(!r.ok)throw new Error('HTTP '+r.status);
@@ -188,6 +188,6 @@ $('#cropOk').onclick=()=>{$('#cropMsg').textContent='Cropping…';setTimeout(()=
 $('#cropCancel').onclick=()=>openEdit(cur);
 $('#cropBtn').onclick=()=>openCrop(cur);
 $('#editOk').onclick=()=>show('pages');
-$('#retake2').onclick=()=>{pages.splice(cur,1);counts();stream?show('cam'):startCam()};
+($('#retake2')||{}).onclick=()=>{pages.splice(cur,1);counts();stream?show('cam'):startCam()};
 $('#ocrBtn').onclick=()=>{$('#editMsg').textContent='Extract Text is coming soon (OCR not added yet).'};
 // manual camera shutter -> go straight to crop; file pick too
